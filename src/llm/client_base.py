@@ -594,11 +594,7 @@ For more information, see here: https://art-from-the-machine.github.io/Mantella/
                 # NOTE: while a secret key is not needed for this request, this may change in the future
                 client = OpenAI(api_key=secret_key, base_url='https://openrouter.ai/api/v1')
                 # don't log initial 'HTTP Request: GET https://openrouter.ai/api/v1/models "HTTP/1.1 200 OK"'
-                logger.getLogger('openai').setLevel(logger.ERROR)
-                logger.getLogger("httpx").setLevel(logger.ERROR)
                 models = client.models.list()
-                logger.getLogger('openai').setLevel(logger.INFO)
-                logger.getLogger("httpx").setLevel(logger.INFO)
                 client.close()
                 allow_manual_model_input = False
 
