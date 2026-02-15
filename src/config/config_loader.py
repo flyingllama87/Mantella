@@ -101,9 +101,9 @@ class ConfigLoader:
                 # Working backwards from MantellaSoftware (where the .exe runs) -> Plugins -> F4SE/SKSE -> Data (mod folder)
                 self.mod_path = str(exe_folder.parent.parent.parent)
 
-                self.lipgen_path = self.game_path+"\\Tools\\LipGen\\"
-                self.facefx_path = self.mod_path+"\\Sound\\Voice\\Processing\\"
-                self.piper_path = str(Path(utils.resolve_path())) + "\\piper"
+                self.lipgen_path = os.path.join(self.game_path, "Tools", "LipGen")
+                self.facefx_path = os.path.join(self.mod_path, "Sound", "Voice", "Processing")
+                self.piper_path = os.path.join(str(Path(utils.resolve_path())), "piper")
                 self.moonshine_folder = str(Path(utils.resolve_path()))
 
                 game_parent_folder_name = os.path.basename(self.game_path).lower()
@@ -114,7 +114,7 @@ class ConfigLoader:
                         # Note that this path assumes that both Fallout 4 versions are installed in the same directory
                         # Working backwards from MantellaSoftware (where the .exe runs) -> Plugins -> F4SE -> Data -> Fallout 4 VR -> common (Steam folder for all games)
                         if not os.path.exists(self.lipgen_path):
-                            self.lipgen_path = str(exe_folder.parent.parent.parent.parent.parent)+"\\Fallout 4"+"\\Tools\\LipGen\\"
+                            self.lipgen_path = os.path.join(str(exe_folder.parent.parent.parent.parent.parent), "Fallout 4", "Tools", "LipGen")
                             if not os.path.exists(self.lipgen_path):
                                 self.lipgen_path = ''
                     elif 'skyrim' in game_parent_folder_name:
@@ -123,7 +123,7 @@ class ConfigLoader:
                         # Note that this path assumes that both Skyrim versions are installed in the same directory
                         # Working backwards from MantellaSoftware (where the .exe runs) -> Plugins -> SKSE -> Data -> Skyrim VR -> common (Steam folder for all games)
                         if not os.path.exists(self.lipgen_path):
-                            self.lipgen_path = str(exe_folder.parent.parent.parent.parent.parent)+"\\Skyrim Special Edition"+"\\Tools\\LipGen\\"
+                            self.lipgen_path = os.path.join(str(exe_folder.parent.parent.parent.parent.parent), "Skyrim Special Edition", "Tools", "LipGen")
                             if not os.path.exists(self.lipgen_path):
                                 self.lipgen_path = ''
                 else:
@@ -160,7 +160,7 @@ class ConfigLoader:
                 self.facefx_path = self.__definitions.get_string_value("facefx_folder")
 
             self.mod_path_base = self.mod_path
-            self.mod_path += "\\Sound\\Voice\\Mantella.esp"
+            self.mod_path = os.path.join(self.mod_path, "Sound", "Voice", "Mantella.esp")
 
             self.language = self.__definitions.get_string_value("language")
             self.end_conversation_keyword = self.__definitions.get_string_value("end_conversation_keyword")
@@ -208,6 +208,7 @@ class ConfigLoader:
             self.use_sr = self.__definitions.get_bool_value("use_sr")
 
             #STT
+            self.audio_input_device = self.__definitions.get_string_value("audio_input_device")
             self.stt_service = self.__definitions.get_string_value("stt_service").lower()
             self.moonshine_model = self.__definitions.get_string_value("moonshine_model_size")
             if not hasattr(self, 'moonshine_folder'):

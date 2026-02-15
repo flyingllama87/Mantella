@@ -102,12 +102,14 @@ class TTSable(ABC):
                 logger.warning(f'{type(ex).__name__}: {ex.args}')
 
             if (self._lip_generation_enabled == 'enabled') or (self._lip_generation_enabled == 'lazy' and not synth_options.is_first_line_of_response):
-                try:
-                    if os.path.exists(new_lip_file_name):
-                        os.remove(new_lip_file_name)
-                    os.rename(final_voiceline_file.replace(".wav", ".lip"), new_lip_file_name)
-                except:
-                    logger.error(f'Could not rename {final_voiceline_file.replace(".wav", ".lip")}')
+                lip_source = final_voiceline_file.replace(".wav", ".lip")
+                if os.path.exists(lip_source):
+                    try:
+                        if os.path.exists(new_lip_file_name):
+                            os.remove(new_lip_file_name)
+                        os.rename(lip_source, new_lip_file_name)
+                    except:
+                        logger.error(f'Could not rename {lip_source}')
             try:
                 fuz_file_name = final_voiceline_file.replace(".wav", ".fuz")
                 if (os.path.exists(fuz_file_name)):
@@ -163,6 +165,10 @@ class TTSable(ABC):
             voiceline (str): The corresponding text voiceline used to help lip sync generation
             skip_lip_generation (bool): Whether to skip the lip file generation process and use a placeholder .lip file instead (useful for when FaceFXWrapper is experiencing issues)
         """
+        # Lip sync tools (LipGenerator, FaceFXWrapper, LipFuzer) are Windows-only
+        if platform.system() != "Windows":
+            return
+
         @utils.time_it
         def run_facefx_command(command, facefx_path) -> None:
             if platform.system() == "Windows":

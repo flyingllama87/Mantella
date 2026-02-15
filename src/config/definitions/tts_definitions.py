@@ -28,7 +28,7 @@ class TTSDefinitions:
             super().__init__(f"Selected folder must contain subfolder '\\resources\\'!")
 
         def apply_constraint(self, value_to_apply_to: str) -> ConfigValueConstraintResult:
-            if not os.path.exists(f"{value_to_apply_to}\\resources\\"):
+            if not os.path.exists(os.path.join(value_to_apply_to, "resources")):
                 return ConfigValueConstraintResult(f'''
 The selected folder for xVASynth is missing the expected subfolder '\\resources\\'. 
 If you have trouble installing the xVASynth version from Nexus, try installing it from Steam.''')
@@ -51,7 +51,7 @@ If you have trouble installing the xVASynth version from Nexus, try installing i
     @staticmethod
     def get_piper_folder_config_value(is_hidden: bool = False) -> ConfigValue:
         #Note(Leidtier): Because this is a Frankenparameter, I just set it to be a string. It SHOULD be a path, but this would require a different handling of the default empty state
-        return ConfigValueString("piper_folder", "Piper Folder", "The folder where Piper is installed (where piper.exe exists).", "", is_hidden=is_hidden)
+        return ConfigValueString("piper_folder", "Piper Folder", "The folder where Piper is installed (where the piper binary exists).", "", is_hidden=is_hidden)
 
     @staticmethod
     def get_lipgen_folder_config_value(is_hidden: bool = False) -> ConfigValue:

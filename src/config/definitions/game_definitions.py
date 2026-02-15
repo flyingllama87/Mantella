@@ -62,10 +62,11 @@ See here to learn how to move your game's installation folder: https://art-from-
             self.__mod_folder_config_value = mod_folder_config_value
 
         def apply_constraint(self, value_to_apply_to: str) -> ConfigValueConstraintResult:
-            if not os.path.exists(f"{value_to_apply_to}\\Sound\\Voice\\Mantella.esp"):
-                return ConfigValueConstraintResult(f"""Error setting '{self.__mod_folder_config_value} = {value_to_apply_to}' 
-Expected subfolders '{value_to_apply_to}\\Sound\\Voice\\Mantella.esp' do not seem to exist.
-The correct location to set this config value to depends on your mod manager. 
+            expected_path = os.path.join(value_to_apply_to, "Sound", "Voice", "Mantella.esp")
+            if not os.path.exists(expected_path):
+                return ConfigValueConstraintResult(f"""Error setting '{self.__mod_folder_config_value} = {value_to_apply_to}'
+Expected subfolders '{expected_path}' do not seem to exist.
+The correct location to set this config value to depends on your mod manager.
 Please see here to learn where to set this value: https://art-from-the-machine.github.io/Mantella/pages/installation.html#setup-configuration""")
             return ConfigValueConstraintResult()
 

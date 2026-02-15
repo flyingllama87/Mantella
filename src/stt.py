@@ -1,4 +1,5 @@
 import sys
+import math
 import numpy as np
 from faster_whisper import WhisperModel
 from src.config.config_loader import ConfigLoader
@@ -15,7 +16,12 @@ import threading
 import time
 import os
 import wave
-from moonshine_onnx import MoonshineOnnxModel, load_tokenizer
+from scipy.signal import resample_poly
+try:
+    from moonshine_onnx import MoonshineOnnxModel, load_tokenizer
+except ImportError:
+    MoonshineOnnxModel = None
+    load_tokenizer = None
 import onnxruntime as ort
 from scipy.io import wavfile
 from sounddevice import InputStream
@@ -62,6 +68,32 @@ class Transcriber:
         self.pause_threshold = config.pause_threshold
         self._temporary_pause_override: float | None = None  # Temporary pause threshold for Listen action
         self.audio_threshold = config.audio_threshold
+        self.audio_input_device = self._resolve_audio_device(config.audio_input_device)
+
+        # Query the device's native sample rate so we can open the stream at a
+        # rate the hardware actually supports, then resample to 16 kHz for VAD/STT.
+        try:
+            import sounddevice as sd
+            if self.audio_input_device is not None:
+                dev_info = sd.query_devices(self.audio_input_device)
+            else:
+                dev_info = sd.query_devices(kind='input')
+            self._native_rate = int(dev_info['default_samplerate'])
+        except Exception:
+            self._native_rate = self.SAMPLING_RATE  # fallback to 16 kHz
+
+        if self._native_rate != self.SAMPLING_RATE:
+            # Compute block size that covers the same duration as CHUNK_SIZE at 16 kHz
+            self._native_blocksize = int(self.CHUNK_SIZE * self._native_rate / self.SAMPLING_RATE)
+            g = math.gcd(self.SAMPLING_RATE, self._native_rate)
+            self._resample_up = self.SAMPLING_RATE // g
+            self._resample_down = self._native_rate // g
+            logger.log(self.loglevel, f"Audio device native rate is {self._native_rate} Hz; will resample to {self.SAMPLING_RATE} Hz (ratio {self._resample_down}:{self._resample_up})")
+        else:
+            self._native_blocksize = self.CHUNK_SIZE
+            self._resample_up = 1
+            self._resample_down = 1
+
         logger.log(self.loglevel, f"Audio threshold set to {self.audio_threshold}. If the mic is not picking up your voice, try lowering this `Speech-to-Text`->`Audio Threshold` value in the Mantella UI. If the mic is picking up too much background noise, try increasing this value.\n")
 
         self.__audio_input_error_count = 0
@@ -71,7 +103,7 @@ class Transcriber:
         
         self.__save_mic_input = config.save_mic_input
         if self.__save_mic_input:
-            self.__mic_input_path: str = config.save_folder+'data\\tmp\\mic'
+            self.__mic_input_path: str = os.path.join(config.save_folder, 'data', 'tmp', 'mic')
             os.makedirs(self.__mic_input_path, exist_ok=True)
 
         self.__stt_secret_key_file = stt_secret_key_file
@@ -97,6 +129,9 @@ class Transcriber:
                 else:
                     self.transcribe_model = WhisperModel(self.whisper_model, device=self.process_device, compute_type="float32")
         else:
+            if MoonshineOnnxModel is None:
+                raise ImportError("Moonshine STT service is selected but 'moonshine_onnx' is not installed. Install it with: pip install moonshine-onnx")
+
             if self.language != 'en':
                 logger.warning(f"Selected language is '{self.language}', but Moonshine only supports English. Please change the selected speech-to-text model to Whisper in `Speech-to-Text`->`STT Service` in the Mantella UI")
 
@@ -132,6 +167,58 @@ class Transcriber:
         self._transcription_ready = threading.Event()
         self._consecutive_empty_count = 0
         self._max_consecutive_empty = 10
+
+    @staticmethod
+    def _resolve_audio_device(device_setting: str) -> int | None:
+        """Resolve the audio device setting to a sounddevice device index.
+
+        Args:
+            device_setting: 'Default', a device index string, a dropdown value like
+                            '2: USB Mic (2ch)', or a substring of a device name.
+
+        Returns:
+            Device index (int) or None for system default.
+        """
+        import sounddevice as sd
+        import re
+
+        if not device_setting or device_setting.strip().lower() == 'default':
+            return None
+
+        value = device_setting.strip()
+
+        # Try dropdown format "N: Device Name (Xch)"
+        m = re.match(r'^(\d+):\s', value)
+        if m:
+            idx = int(m.group(1))
+            try:
+                device_info = sd.query_devices(idx)
+                if device_info['max_input_channels'] > 0:
+                    logger.log(27, f"Audio input device set to #{idx}: {device_info['name']}")
+                    return idx
+            except sd.PortAudioError:
+                pass
+
+        # Try as plain integer index
+        try:
+            idx = int(value)
+            device_info = sd.query_devices(idx)
+            if device_info['max_input_channels'] > 0:
+                logger.log(27, f"Audio input device set to #{idx}: {device_info['name']}")
+                return idx
+        except (ValueError, sd.PortAudioError):
+            pass
+
+        # Try as substring match on device name
+        devices = sd.query_devices()
+        needle = value.lower()
+        for i, d in enumerate(devices):
+            if needle in d['name'].lower() and d['max_input_channels'] > 0:
+                logger.log(27, f"Audio input device matched '{device_setting}' -> #{i}: {d['name']}")
+                return i
+
+        logger.warning(f"Could not find audio input device '{device_setting}', using system default")
+        return None
 
     @property
     def is_listening(self) -> bool:
@@ -189,7 +276,7 @@ class Transcriber:
         if self.external_whisper_service:
             try: # first check mod folder for stt secret key
                 mod_parent_folder = str(Path(utils.resolve_path()).parent.parent.parent)
-                with open(mod_parent_folder+'\\'+self.__stt_secret_key_file, 'r') as f:
+                with open(os.path.join(mod_parent_folder, self.__stt_secret_key_file), 'r') as f:
                     api_key: str = f.readline().strip()
             except: # check locally (same folder as exe) for stt secret key
                 try:
@@ -198,7 +285,7 @@ class Transcriber:
                 except:
                     try: # first check mod folder for secret key
                         mod_parent_folder = str(Path(utils.resolve_path()).parent.parent.parent)
-                        with open(mod_parent_folder+'\\'+self.__secret_key_file, 'r') as f:
+                        with open(os.path.join(mod_parent_folder, self.__secret_key_file), 'r') as f:
                             api_key: str = f.readline().strip()
                     except: # check locally (same folder as exe) for secret key
                         with open(self.__secret_key_file, 'r') as f:
@@ -323,11 +410,12 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
         self._reset_state()
         self.prompt = prompt
         
-        # Start audio stream
+        # Start audio stream at the device's native sample rate
         self._stream = InputStream(
-            samplerate=self.SAMPLING_RATE,
+            device=self.audio_input_device,
+            samplerate=self._native_rate,
             channels=1,
-            blocksize=self.CHUNK_SIZE,
+            blocksize=self._native_blocksize,
             dtype=np.float32,
             callback=self._create_input_callback(self._audio_queue),
             latency = 'low'
@@ -357,6 +445,10 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
                         logger.log(23, f"STT WARNING: Processing audio error: {status}")
                     self.__processing_audio_error_count += 1
                     continue
+
+                # Resample from native rate to 16 kHz if needed
+                if self._native_rate != self.SAMPLING_RATE:
+                    chunk = resample_poly(chunk, self._resample_up, self._resample_down).astype(np.float32)
 
                 with self._lock:
                     # Update audio buffer

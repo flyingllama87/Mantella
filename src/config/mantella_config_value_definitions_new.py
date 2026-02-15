@@ -84,6 +84,7 @@ class MantellaConfigValueDefinitionsNew:
         result.add_base_group(tts_category)
 
         stt_category = ConfigValueGroup("STT", "Speech-to-Text", "Settings for the STT methods Mantella supports.", on_value_change_callback)
+        stt_category.add_config_value(STTDefinitions.get_audio_input_device_config_value())
         stt_category.add_config_value(STTDefinitions.get_audio_threshold_config_value())
         stt_category.add_config_value(STTDefinitions.get_allow_interruption_config_value()) 
         stt_category.add_config_value(STTDefinitions.get_save_mic_input_config_value())

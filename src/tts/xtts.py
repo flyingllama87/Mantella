@@ -1,3 +1,4 @@
+import os
 from src.config.config_loader import ConfigLoader
 from src.tts.ttsable import TTSable
 import requests
@@ -226,7 +227,7 @@ class XTTS(TTSable):
     def _run_xtts_server(self):
         try:
             # Start the server
-            command = f'{self.__xtts_server_path}\\xtts-api-server-mantella.exe'
+            command = os.path.join(self.__xtts_server_path, 'xtts-api-server-mantella.exe')
     
             # Check if deepspeed should be enabled
             if self.__xtts_default_model:
