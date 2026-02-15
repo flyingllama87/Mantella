@@ -142,6 +142,7 @@ class Conversation:
 
         # interrupt response if player has spoken
         if self.__stt and self.__stt.has_player_spoken:
+            logger.log(23, "Player is interrupting NPC response")
             self.__stop_generation()
             self.__sentences.clear()
             self.__is_player_interrupting = True
@@ -444,10 +445,12 @@ class Conversation:
     @utils.time_it
     def end(self, end_timestamp: float | None = None):
         """Ends a conversation
-        
+
         Args:
             end_timestamp: Optional game timestamp (days passed as float) when conversation ends
         """
+        npc_names = self.__context.get_character_names_as_text(False) if self.__context else "unknown"
+        logger.info(f"Conversation with {npc_names} ended")
         self.__has_already_ended = True
         self.__stop_generation()
         self.__sentences.clear()

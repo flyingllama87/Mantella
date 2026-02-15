@@ -45,6 +45,7 @@ class Transcriber:
     @utils.time_it
     def __init__(self, config: ConfigLoader, stt_secret_key_file: str, secret_key_file: str):
         self.loglevel = 27
+        logger.log(27, f"STT: Initializing Transcriber (service={config.stt_service}, language={config.stt_language})")
         self.language = config.stt_language
         self.task = "translate" if config.stt_translate == 1 else "transcribe"
         self.stt_service = config.stt_service
@@ -69,30 +70,7 @@ class Transcriber:
         self._temporary_pause_override: float | None = None  # Temporary pause threshold for Listen action
         self.audio_threshold = config.audio_threshold
         self.audio_input_device = self._resolve_audio_device(config.audio_input_device)
-
-        # Query the device's native sample rate so we can open the stream at a
-        # rate the hardware actually supports, then resample to 16 kHz for VAD/STT.
-        try:
-            import sounddevice as sd
-            if self.audio_input_device is not None:
-                dev_info = sd.query_devices(self.audio_input_device)
-            else:
-                dev_info = sd.query_devices(kind='input')
-            self._native_rate = int(dev_info['default_samplerate'])
-        except Exception:
-            self._native_rate = self.SAMPLING_RATE  # fallback to 16 kHz
-
-        if self._native_rate != self.SAMPLING_RATE:
-            # Compute block size that covers the same duration as CHUNK_SIZE at 16 kHz
-            self._native_blocksize = int(self.CHUNK_SIZE * self._native_rate / self.SAMPLING_RATE)
-            g = math.gcd(self.SAMPLING_RATE, self._native_rate)
-            self._resample_up = self.SAMPLING_RATE // g
-            self._resample_down = self._native_rate // g
-            logger.log(self.loglevel, f"Audio device native rate is {self._native_rate} Hz; will resample to {self.SAMPLING_RATE} Hz (ratio {self._resample_down}:{self._resample_up})")
-        else:
-            self._native_blocksize = self.CHUNK_SIZE
-            self._resample_up = 1
-            self._resample_down = 1
+        self._update_native_rate()
 
         logger.log(self.loglevel, f"Audio threshold set to {self.audio_threshold}. If the mic is not picking up your voice, try lowering this `Speech-to-Text`->`Audio Threshold` value in the Mantella UI. If the mic is picking up too much background noise, try increasing this value.\n")
 
@@ -211,7 +189,11 @@ class Transcriber:
 
         # Try as substring match on device name
         devices = sd.query_devices()
-        needle = value.lower()
+        # Strip dropdown formatting ("N: Device Name (Xch)" -> "Device Name")
+        # so the substring match works even when device indices have shifted.
+        name_for_match = re.sub(r'^\d+:\s*', '', value)
+        name_for_match = re.sub(r'\s*\(\d+ch\)\s*$', '', name_for_match)
+        needle = name_for_match.lower()
         for i, d in enumerate(devices):
             if needle in d['name'].lower() and d['max_input_channels'] > 0:
                 logger.log(27, f"Audio input device matched '{device_setting}' -> #{i}: {d['name']}")
@@ -219,6 +201,40 @@ class Transcriber:
 
         logger.warning(f"Could not find audio input device '{device_setting}', using system default")
         return None
+
+    def _update_native_rate(self) -> None:
+        """Query the audio device's native sample rate and compute resampling parameters."""
+        import sounddevice as sd
+        try:
+            if self.audio_input_device is not None:
+                dev_info = sd.query_devices(self.audio_input_device)
+            else:
+                try:
+                    dev_info = sd.query_devices(kind='input')
+                except Exception:
+                    # PortAudio has no default input device (-1); find first input device
+                    for i, d in enumerate(sd.query_devices()):
+                        if d['max_input_channels'] > 0:
+                            dev_info = d
+                            self.audio_input_device = i
+                            logger.log(self.loglevel, f"No default input device; using #{i}: {d['name']}")
+                            break
+                    else:
+                        raise RuntimeError("No input audio devices found")
+            self._native_rate = int(dev_info['default_samplerate'])
+        except Exception:
+            self._native_rate = self.SAMPLING_RATE  # fallback to 16 kHz
+
+        if self._native_rate != self.SAMPLING_RATE:
+            self._native_blocksize = int(self.CHUNK_SIZE * self._native_rate / self.SAMPLING_RATE)
+            g = math.gcd(self.SAMPLING_RATE, self._native_rate)
+            self._resample_up = self.SAMPLING_RATE // g
+            self._resample_down = self._native_rate // g
+            logger.log(self.loglevel, f"Audio device native rate is {self._native_rate} Hz; will resample to {self.SAMPLING_RATE} Hz (ratio {self._resample_down}:{self._resample_up})")
+        else:
+            self._native_blocksize = self.CHUNK_SIZE
+            self._resample_up = 1
+            self._resample_down = 1
 
     @property
     def is_listening(self) -> bool:
@@ -410,16 +426,34 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
         self._reset_state()
         self.prompt = prompt
         
-        # Start audio stream at the device's native sample rate
-        self._stream = InputStream(
-            device=self.audio_input_device,
-            samplerate=self._native_rate,
-            channels=1,
-            blocksize=self._native_blocksize,
-            dtype=np.float32,
-            callback=self._create_input_callback(self._audio_queue),
-            latency = 'low'
-        )
+        # Start audio stream at the device's native sample rate.
+        # On Linux, opening an ALSA device by index can fail when
+        # PipeWire/PulseAudio already owns it, so fall back to the
+        # system default device (which routes through PipeWire/Pulse).
+        try:
+            self._stream = InputStream(
+                device=self.audio_input_device,
+                samplerate=self._native_rate,
+                channels=1,
+                blocksize=self._native_blocksize,
+                dtype=np.float32,
+                callback=self._create_input_callback(self._audio_queue),
+            )
+        except Exception as e:
+            if self.audio_input_device is not None:
+                logger.warning(f"Could not open audio device #{self.audio_input_device} at {self._native_rate} Hz: {e}. Falling back to system default device.")
+                self.audio_input_device = None
+                self._update_native_rate()
+                self._stream = InputStream(
+                    device=None,
+                    samplerate=self._native_rate,
+                    channels=1,
+                    blocksize=self._native_blocksize,
+                    dtype=np.float32,
+                    callback=self._create_input_callback(self._audio_queue),
+                )
+            else:
+                raise
         self._stream.start()
         
         # Start processing thread
@@ -442,13 +476,21 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
                 chunk, status = self._audio_queue.get(timeout=0.1)
                 if status:
                     if self.__processing_audio_error_count % self.__warning_frequency == 0:
-                        logger.log(23, f"STT WARNING: Processing audio error: {status}")
+                        logger.debug(f"STT: audio stream status: {status}")
                     self.__processing_audio_error_count += 1
-                    continue
+                    # Don't skip the chunk — "input overflow" means some
+                    # prior audio was lost, but this chunk's data is still
+                    # valid.  Discarding it creates gaps that confuse VAD.
 
                 # Resample from native rate to 16 kHz if needed
                 if self._native_rate != self.SAMPLING_RATE:
                     chunk = resample_poly(chunk, self._resample_up, self._resample_down).astype(np.float32)
+                    # For non-integer ratios (e.g. 44100→16000) the output
+                    # may be ±1 sample off; Silero VAD needs exactly CHUNK_SIZE.
+                    if len(chunk) < self.CHUNK_SIZE:
+                        chunk = np.pad(chunk, (0, self.CHUNK_SIZE - len(chunk)))
+                    elif len(chunk) > self.CHUNK_SIZE:
+                        chunk = chunk[:self.CHUNK_SIZE]
 
                 with self._lock:
                     # Update audio buffer
@@ -518,7 +560,7 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
         def input_callback(indata, frames, time, status):
             if status:
                 if self.__audio_input_error_count % self.__warning_frequency == 0:
-                    logger.log(23, f"STT WARNING: Audio input error: {status}")
+                    logger.debug(f"STT: audio callback status: {status}")
                 self.__audio_input_error_count += 1
             # Store both data and status in queue
             q.put((indata.copy().flatten(), status))

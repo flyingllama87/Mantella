@@ -68,6 +68,7 @@ class GameStateManager:
         self.__talk = Conversation(context_for_conversation, self.__chat_manager, self.__rememberer, self.__client, self.__stt, self.__mic_input, self.__mic_ptt, self.__game)
         self.__update_context(input_json)
         self.__try_preload_voice_model()
+        logger.info(f"Starting conversation (world={world_id}, mic={self.__mic_input}, ptt={self.__mic_ptt})")
         self.__talk.start_conversation()
             
         return {
@@ -191,6 +192,7 @@ class GameStateManager:
         if(self.__talk):
             # Extract end timestamp from game client
             end_timestamp = input_json.get(comm_consts.KEY_ENDCONVERSATION_TIMESTAMP, None)
+            logger.info("Ending conversation")
             self.__talk.end(end_timestamp)
             self.__talk = None
 
@@ -201,16 +203,20 @@ class GameStateManager:
     
     def process_stt_setup(self, input_json: dict[str, Any]):
         '''Process the STT setup (mic / text / push-to-talk) based on the settings passed in the input JSON'''
-        if input_json[comm_consts.KEY_INPUTTYPE] in (comm_consts.KEY_INPUTTYPE_MIC, comm_consts.KEY_INPUTTYPE_PTT):
+        input_type = input_json[comm_consts.KEY_INPUTTYPE]
+        logger.info(f"STT setup: input type = {input_type}")
+        if input_type in (comm_consts.KEY_INPUTTYPE_MIC, comm_consts.KEY_INPUTTYPE_PTT):
             self.__mic_input = True
             # only init Transcriber if mic input is enabled
             if not self.__stt:
+                logger.info(f"STT setup: Initializing Transcriber (service={self.__config.stt_service}, device='{self.__config.audio_input_device}')")
                 self.__stt = Transcriber(self.__config, self.__stt_api_file, self.__api_file)
-            if input_json[comm_consts.KEY_INPUTTYPE] == comm_consts.KEY_INPUTTYPE_PTT:
+            if input_type == comm_consts.KEY_INPUTTYPE_PTT:
                 self.__mic_ptt = True
         else:
             self.__mic_input = False
             if self.__stt:
+                logger.info("STT setup: Disabling mic input, stopping Transcriber")
                 self.__stt.stop_listening()
                 self.__stt = None
 
@@ -339,6 +345,7 @@ class GameStateManager:
                     voice_accent = already_loaded_character.voice_accent
                     is_generic_npc = already_loaded_character.is_generic_npc
             elif self.__talk and not is_player_character :#If this is not the player and the character has not already been loaded
+                logger.info(f"Loading character: {character_name} (base_id={base_id}, race={race})")
                 external_info: external_character_info = self.__game.load_external_character_info(base_id, character_name, race, gender, actor_voice_model)
                 
                 bio = external_info.bio

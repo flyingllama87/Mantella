@@ -49,6 +49,7 @@ class DiagnosticsRunner:
         from src.llm.client_base import ClientBase
         from openai import OpenAI
 
+        logger.info("Diagnostics: Testing LLM connection...")
         self._refresh_config()
         service = self._config.llm_api
         model = self._config.llm
@@ -89,8 +90,10 @@ class DiagnosticsRunner:
             client.close()
             if response and response.choices:
                 lines.append(f"- &#x2705; Test completion succeeded (model responds)")
+                logger.info(f"Diagnostics: LLM OK — {service}/{model} responds")
             else:
                 lines.append(f"- &#x26A0;&#xFE0F; Completion returned empty response")
+                logger.warning("Diagnostics: LLM returned empty response")
         except Exception as e:
             error_str = str(e)
             if "502" in error_str or "authenticate" in error_str.lower():
@@ -100,11 +103,13 @@ class DiagnosticsRunner:
                 lines.append(f"- &#x274C; Model `{model}` not found on {service}")
             else:
                 lines.append(f"- &#x274C; Test completion failed: {error_str[:200]}")
+            logger.warning(f"Diagnostics: LLM FAILED — {error_str[:120]}")
 
         return "\n".join(lines)
 
     def test_tts_service(self) -> str:
         """Check TTS binary / server availability."""
+        logger.info("Diagnostics: Testing TTS service...")
         self._refresh_config()
         tts = self._config.tts_service
         lines = ["### TTS Service", f"- **Selected:** {tts.display_name}"]
@@ -156,10 +161,12 @@ class DiagnosticsRunner:
             except Exception:
                 lines.append(f"- &#x274C; xVASynth server not reachable on port 8008")
 
+        logger.info(f"Diagnostics: TTS result — {tts.display_name}")
         return "\n".join(lines)
 
     def test_stt_service(self) -> str:
         """Report configured STT service and check availability."""
+        logger.info("Diagnostics: Testing STT service...")
         self._refresh_config()
         stt = self._config.stt_service
         lines = ["### STT Service", f"- **Selected:** {stt}"]
@@ -191,6 +198,7 @@ class DiagnosticsRunner:
         else:
             lines.append(f"- Service type: {stt}")
 
+        logger.info(f"Diagnostics: STT result — {stt}")
         return "\n".join(lines)
 
     def test_mod_folder(self) -> str:
@@ -241,6 +249,7 @@ class DiagnosticsRunner:
 
     def test_microphone(self) -> str:
         """Check if a microphone input device is available and can be opened."""
+        logger.info("Diagnostics: Testing microphone...")
         lines = ["### Microphone"]
 
         try:
@@ -253,7 +262,20 @@ class DiagnosticsRunner:
                 lines.append("- &#x274C; No input (microphone) devices found")
                 return "\n".join(lines)
 
-            default_input = sd.query_devices(kind='input')
+            # query_devices(kind='input') can fail if PortAudio has no
+            # default device (-1).  Fall back to the first input device.
+            test_device_index = None
+            try:
+                default_input = sd.query_devices(kind='input')
+            except Exception:
+                for i, d in enumerate(devices):
+                    if d['max_input_channels'] > 0:
+                        default_input = d
+                        test_device_index = i
+                        break
+                else:
+                    lines.append("- &#x274C; No default input device and no fallback found")
+                    return "\n".join(lines)
             lines.append(f"- **Default input:** {default_input['name']}")
             lines.append(f"- **Input channels:** {default_input['max_input_channels']}")
             lines.append(f"- **Sample rate:** {default_input['default_samplerate']} Hz")
@@ -265,6 +287,7 @@ class DiagnosticsRunner:
                 native_rate = int(default_input['default_samplerate'])
                 native_blocksize = int(512 * native_rate / 16000)
                 stream = sd.InputStream(
+                    device=test_device_index,
                     samplerate=native_rate,
                     channels=1,
                     blocksize=native_blocksize,
@@ -278,11 +301,13 @@ class DiagnosticsRunner:
                 stream.stop()
                 stream.close()
                 lines.append(f"- &#x2705; Microphone stream opened successfully")
+                logger.info(f"Diagnostics: Microphone OK — {default_input['name']} at {native_rate} Hz, peak={peak:.4f}")
                 if peak > 0.001:
                     lines.append(f"- &#x2705; Audio signal detected (peak: {peak:.4f})")
                 else:
                     lines.append(f"- &#x26A0;&#xFE0F; Stream opened but signal is very quiet (peak: {peak:.6f}) — try speaking or check mic mute")
             except Exception as e:
+                logger.warning(f"Diagnostics: Microphone FAILED — {e}")
                 lines.append(f"- &#x274C; Could not open microphone stream: {e}")
 
             # List all input devices
@@ -300,11 +325,13 @@ class DiagnosticsRunner:
 
     def test_stt_live(self) -> str:
         """Record a few seconds of audio and run STT transcription end-to-end."""
+        logger.info("Diagnostics: Starting STT live test...")
         self._refresh_config()
         lines = ["### STT Live Test"]
 
         stt_service = self._config.stt_service
         device_setting = self._config.audio_input_device
+        logger.info(f"Diagnostics: STT live — service={stt_service}, device='{device_setting}'")
         lines.append(f"- **STT Service:** {stt_service}")
         lines.append(f"- **Audio Device:** {device_setting}")
 
@@ -312,7 +339,9 @@ class DiagnosticsRunner:
         try:
             from src.stt import Transcriber
             device_index = Transcriber._resolve_audio_device(device_setting)
+            logger.info(f"Diagnostics: STT live — resolved device index: {device_index}")
         except Exception as e:
+            logger.warning(f"Diagnostics: STT live — device resolution failed: {e}")
             lines.append(f"- &#x274C; Could not resolve audio device: {e}")
             return "\n".join(lines)
 
@@ -331,7 +360,19 @@ class DiagnosticsRunner:
             if device_index is not None:
                 dev_info = sd.query_devices(device_index)
             else:
-                dev_info = sd.query_devices(kind='input')
+                # System default; query_devices(kind='input') can fail if
+                # PortAudio has no default device (-1).  Fall back to the
+                # first device that has input channels.
+                try:
+                    dev_info = sd.query_devices(kind='input')
+                except Exception:
+                    for i, d in enumerate(sd.query_devices()):
+                        if d['max_input_channels'] > 0:
+                            dev_info = d
+                            device_index = i
+                            break
+                    else:
+                        raise RuntimeError("No input audio devices found")
             native_rate = int(dev_info['default_samplerate'])
 
             audio = sd.rec(
@@ -351,9 +392,11 @@ class DiagnosticsRunner:
 
             peak = float(np.max(np.abs(audio)))
             lines.append(f"- **Audio peak level:** {peak:.4f}")
+            logger.info(f"Diagnostics: STT live — recorded at {native_rate} Hz, peak={peak:.4f}")
             if peak < 0.001:
                 lines.append("- &#x26A0;&#xFE0F; Audio is very quiet — check mic mute or device selection")
         except Exception as e:
+            logger.warning(f"Diagnostics: STT live — recording FAILED: {e}")
             lines.append(f"- &#x274C; Recording failed: {e}")
             return "\n".join(lines)
 
@@ -397,15 +440,19 @@ class DiagnosticsRunner:
 
             if text and text.strip():
                 lines.append(f"- &#x2705; **Transcription:** {text.strip()}")
+                logger.info(f"Diagnostics: STT live OK — transcription: '{text.strip()}'")
             else:
                 lines.append("- &#x26A0;&#xFE0F; Transcription returned empty — try speaking louder or check the model")
+                logger.warning("Diagnostics: STT live — transcription returned empty")
         except Exception as e:
+            logger.warning(f"Diagnostics: STT live — transcription FAILED: {e}")
             lines.append(f"- &#x274C; Transcription failed: {e}")
 
         return "\n".join(lines)
 
     def test_all(self) -> str:
         """Run all checks, return combined markdown."""
+        logger.info("Diagnostics: Running all tests...")
         self._refresh_config()
         sections = [
             self.test_platform_info(),
@@ -416,4 +463,5 @@ class DiagnosticsRunner:
             self.test_mod_folder(),
             self.test_game_connection(),
         ]
+        logger.info("Diagnostics: All tests completed")
         return "\n\n---\n\n".join(sections)

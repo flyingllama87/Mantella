@@ -36,6 +36,7 @@ class ConfigLoader:
         config = configparser.ConfigParser()
         try:
             config.read(self.__file_name, encoding='utf-8')
+            logger.info(f"Config loaded from {self.__file_name}")
         except Exception as e:
             logger.error(repr(e))
             logger.error(f'Unable to read / open config.ini. If you have recently edited this file, please try reverting to a previous version. This error is normally due to using special characters.')
@@ -79,6 +80,7 @@ class ConfigLoader:
     def __on_config_value_change(self):
         self.__has_any_value_changed = True
         if not self.__is_initial_load:
+            logger.debug("Config: value changed, saving config.ini")
             self.__write_config_state(self.__definitions)
     
     def __write_config_state(self, definitions: ConfigValues, create_back_up_configini: bool = False):
@@ -351,7 +353,10 @@ LLM parameter list must follow the Python dictionary format: https://www.w3schoo
 LLM parameter list must follow the Python dictionary format: https://www.w3schools.com/python/python_dictionaries.asp""")
                 self.function_llm_params = None
 
-            pass
+            if self.__is_initial_load:
+                logger.info(f"Config: Game={self.game.display_name if hasattr(self.game, 'display_name') else self.game}, LLM={self.llm_api}/{self.llm}")
+                logger.info(f"Config: TTS={self.tts_service.display_name if hasattr(self.tts_service, 'display_name') else self.tts_service}, STT={self.stt_service}, Audio device='{self.audio_input_device}'")
+                logger.info(f"Config: Mod path={self.mod_path_base}")
         except Exception as e:
             utils.play_error_sound()
             logger.error('Parameter missing/invalid in config.ini file!')

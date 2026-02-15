@@ -181,6 +181,7 @@ class Piper(TTSable):
 
             self.__selected_voice = self._select_voice_type(voice, in_game_voice, csv_in_game_voice, advanced_voice_model, self._current_actor_gender, self._current_actor_race)
             model_path = self.__models_path / f'{self.__selected_voice}.onnx'
+            logger.log(self._loglevel, f'Loading Piper model: {self.__selected_voice}')
 
             self.__write_to_stdin(f"load_model {model_path}\n")
             self.__waiting_for_voice_load = True
