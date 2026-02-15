@@ -91,7 +91,7 @@ class Transcriber:
         if (self.stt_service == 'whisper') and (self.__api_key) and ('openai' in self.whisper_url) and (self.external_whisper_service):
             self.__initial_client = self.__generate_sync_client() # initialize first client in advance to save time
 
-        self.__ignore_list = ['', 'thank you', 'thank you for watching', 'thanks for watching', 'the transcript is from the', 'the', 'thank you very much', "thank you for watching and i'll see you in the next video", "we'll see you in the next video", 'see you next time']
+        self.__ignore_list = ['', 'thank you', 'thank you for watching', 'thanks for watching', 'the transcript is from the', 'the', 'thank you very much', "thank you for watching and i'll see you in the next video", "we'll see you in the next video", 'see you next time', 'you']
         
         self.transcribe_model: WhisperModel | MoonshineOnnxModel | None = None
         if self.stt_service == 'whisper':
@@ -335,12 +335,42 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
         if self.proactive_mic_mode:
             logger.log(self.loglevel, f'Interim transcription: {transcription}')
         
+        # Filter prompt-echo hallucinations (Whisper repeating its initial_prompt
+        # back when it receives silence or short noise bursts)
+        if transcription and self._is_hallucination(transcription):
+            logger.debug(f"STT: Filtered hallucination: '{transcription.strip()}'")
+            transcription = ''
+
         # Only update the transcription if it contains a value, otherwise keep the existing transcription
         if transcription:
             return transcription
         else:
             self._consecutive_empty_count += 1
             return self._current_transcription
+
+
+    def _is_hallucination(self, text: str) -> bool:
+        """Detect Whisper hallucinations (prompt echoes, repetitive phrases).
+
+        Whisper tends to echo back its initial_prompt when given silence or
+        very short noise bursts.  It also sometimes produces repetitive
+        phrases like 'Thank you. Thank you. Thank you.'
+        """
+        cleaned = text.strip().lower()
+        if not cleaned:
+            return False
+
+        # Prompt-echo: the prompt is "This is a conversation with <NPC> in <location>."
+        # Whisper hallucinates this exact text (or repetitions of it) from noise.
+        if 'this is a conversation with' in cleaned:
+            return True
+
+        # Repetitive hallucination: same sentence repeated multiple times
+        sentences = [s.strip() for s in cleaned.replace('!', '.').replace('?', '.').split('.') if s.strip()]
+        if len(sentences) >= 2 and len(set(sentences)) == 1:
+            return True
+
+        return False
 
 
     @utils.time_it
