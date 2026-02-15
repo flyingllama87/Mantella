@@ -7,9 +7,10 @@ import os
 from shutil import rmtree
 import wave
 from charset_normalizer import detect
-import winsound
 import platform
-import winreg
+if platform.system() == "Windows":
+    import winsound
+    import winreg
 from pathlib import Path
 from src.telemetry.telemetry import get_telemetry_manager, create_span_from_thread
 
@@ -68,24 +69,27 @@ def resolve_path():
 
 
 def play_mantella_ready_sound():
-    try:
-        winsound.PlaySound(os.path.join(resolve_path(),'data','mantella_ready.wav'), winsound.SND_FILENAME | winsound.SND_ASYNC)
-    except:
-        pass
+    if platform.system() == "Windows":
+        try:
+            winsound.PlaySound(os.path.join(resolve_path(),'data','mantella_ready.wav'), winsound.SND_FILENAME | winsound.SND_ASYNC)
+        except:
+            pass
 
 
 def play_no_mic_input_detected_sound():
-    try:
-        winsound.PlaySound(os.path.join(resolve_path(),'data','no_mic_input_detected.wav'), winsound.SND_FILENAME | winsound.SND_ASYNC)
-    except:
-        pass
+    if platform.system() == "Windows":
+        try:
+            winsound.PlaySound(os.path.join(resolve_path(),'data','no_mic_input_detected.wav'), winsound.SND_FILENAME | winsound.SND_ASYNC)
+        except:
+            pass
 
 
 def play_error_sound():
-    try:
-        winsound.PlaySound("SystemHand", winsound.SND_ALIAS | winsound.SND_ASYNC)
-    except:
-        pass
+    if platform.system() == "Windows":
+        try:
+            winsound.PlaySound("SystemHand", winsound.SND_ALIAS | winsound.SND_ASYNC)
+        except:
+            pass
 
 
 @time_it
@@ -161,16 +165,16 @@ def get_my_games_directory(custom_user_folder='') -> str:
             documents_path = winreg.QueryValueEx(reg_key, "Personal")[0]
             winreg.CloseKey(reg_key)
         else:
-            homepath = os.getenv('HOMEPATH')
-            if homepath:
-                documents_path = os.path.realpath(homepath+'/Documents')
+            documents_path = os.path.expanduser("~/Documents")
+            if not os.path.exists(documents_path):
+                documents_path = os.path.expanduser("~")
         if documents_path == "":
             print("ERROR: Could not find 'Documents' folder or equivalent!")
         save_dir = Path(os.path.join(documents_path,"My Games","Mantella"))
     else:
         save_dir = Path(documents_path)
     save_dir.mkdir(parents=True, exist_ok=True)
-    return str(save_dir)+'\\'
+    return str(save_dir)
 
 
 def convert_to_skyrim_hex_format(identifier: str) -> str:

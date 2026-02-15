@@ -39,8 +39,9 @@ Conversation histories, config.ini, and logging.log available in:
 
         # clean up old instances of exe runtime files
         utils.cleanup_mei(self.config.remove_mei_folders)
-        utils.cleanup_tmp(self.config.save_folder+'data\\tmp')
-        utils.cleanup_tmp(os.getenv('TMP')+'\\voicelines') # cleanup temp voicelines
+        utils.cleanup_tmp(os.path.join(self.config.save_folder, 'data', 'tmp'))
+        tmp_dir = os.getenv('TMP') or os.getenv('TMPDIR') or '/tmp'
+        utils.cleanup_tmp(os.path.join(tmp_dir, 'voicelines')) # cleanup temp voicelines
 
         self.language_info = self._get_language_info(language_file, self.config.language)
         self._setup_telemetry(self.config, mantella_version)
