@@ -146,6 +146,11 @@ class Transcriber:
         self._consecutive_empty_count = 0
         self._max_consecutive_empty = 10
 
+        # NPC echo detection: store recent NPC voicelines so we can
+        # filter out transcriptions that are just the mic picking up
+        # game audio from speakers.
+        self._recent_npc_lines: list[str] = []
+
     @staticmethod
     def _resolve_audio_device(device_setting: str) -> int | None:
         """Resolve the audio device setting to a sounddevice device index.
@@ -350,7 +355,8 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
 
 
     def _is_hallucination(self, text: str) -> bool:
-        """Detect Whisper hallucinations (prompt echoes, repetitive phrases).
+        """Detect Whisper hallucinations (prompt echoes, repetitive phrases)
+        and NPC audio echo (mic picking up game audio from speakers).
 
         Whisper tends to echo back its initial_prompt when given silence or
         very short noise bursts.  It also sometimes produces repetitive
@@ -370,7 +376,49 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
         if len(sentences) >= 2 and len(set(sentences)) == 1:
             return True
 
+        # NPC echo: the microphone picked up NPC voice lines playing through
+        # speakers and Whisper transcribed them as player speech.  Compare
+        # against recently spoken NPC lines using word-level similarity.
+        for npc_line in self._recent_npc_lines:
+            if self._text_similarity(cleaned, npc_line) > 0.5:
+                return True
+
         return False
+
+
+    def add_npc_line(self, text: str) -> None:
+        """Register a recently spoken NPC voiceline for echo detection.
+
+        Call this whenever an NPC sentence is sent for TTS synthesis so the
+        STT can filter out transcriptions that are just the mic picking up
+        game audio from speakers.
+        """
+        line = text.strip().lower()
+        if line:
+            self._recent_npc_lines.append(line)
+            # Keep only the last 20 lines (roughly the last few exchanges)
+            if len(self._recent_npc_lines) > 20:
+                self._recent_npc_lines = self._recent_npc_lines[-20:]
+
+    def clear_npc_lines(self) -> None:
+        """Clear recent NPC lines (call when a new conversation starts)."""
+        self._recent_npc_lines.clear()
+
+    @staticmethod
+    def _text_similarity(a: str, b: str) -> float:
+        """Compute word-level containment similarity between two strings.
+
+        Returns the fraction of words in the shorter text that also appear
+        in the longer text.  This catches both exact echoes and partial
+        matches (e.g. Whisper transcribing "Stay in the house" from the
+        NPC line "Sigrid! Stay in the house!").
+        """
+        words_a = set(a.split())
+        words_b = set(b.split())
+        if not words_a or not words_b:
+            return 0.0
+        intersection = words_a & words_b
+        return len(intersection) / min(len(words_a), len(words_b))
 
 
     @utils.time_it

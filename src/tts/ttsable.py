@@ -8,6 +8,7 @@ else:
     STARTUPINFO = None
     STARTF_USESHOWWINDOW = 0
 
+import re
 from src.config.config_loader import ConfigLoader
 import src.utils as utils
 import os
@@ -56,6 +57,14 @@ class TTSable(ABC):
         logger.debug(f'last_voice: {self._last_voice}, voice: {voice}, in_game_voice: {in_game_voice}, csv_in_game_voice: {csv_in_game_voice}, advanced_voice_model: {advanced_voice_model}, voice_accent: {voice_accent}')
         if self._last_voice == '' or (isinstance(self._last_voice, str) and self._last_voice.lower() not in {isinstance(v, str) and v.lower() for v in {voice, in_game_voice, csv_in_game_voice, advanced_voice_model, f'fo4_{voice}'}}):
             self.change_voice(voice, in_game_voice, csv_in_game_voice, advanced_voice_model, voice_accent)
+
+        # Strip leaked LLM function-call markup that occasionally slips
+        # through parsing (e.g. "<function=Emote> <parameter=...>")
+        voiceline = re.sub(r'</?(?:function|parameter|tool_call)[^>]*>', '', voiceline)
+        voiceline = re.sub(r'(?i)^call\s*$', '', voiceline)
+        if not voiceline.strip():
+            logger.warning("TTS: voiceline was empty after stripping LLM markup; skipping synthesis")
+            raise ValueError("Empty voiceline after sanitization")
 
         logger.log(22, f'Synthesizing voiceline: {voiceline.strip()}')
 

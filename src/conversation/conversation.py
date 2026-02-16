@@ -118,6 +118,8 @@ class Conversation:
         Returns:
             tuple[str, sentence | None]: Returns a tuple consisting of a reply type and an optional sentence
         """
+        if self.__stt:
+            self.__stt.clear_npc_lines()
         greeting: UserMessage | None = self.__conversation_type.get_user_message(self.__context, self.__messages)
         if greeting:
             greeting = self.update_game_events(greeting)
@@ -164,6 +166,10 @@ class Conversation:
         elif next_sentence and len(next_sentence.text) > 0:
             if {'identifier': comm_consts.ACTION_REMOVECHARACTER} in next_sentence.actions:
                 self.__context.remove_character(next_sentence.speaker)
+            # Register NPC line with STT for echo detection (filters out
+            # transcriptions that are just the mic picking up game audio)
+            if self.__stt and not next_sentence.speaker.is_player_character:
+                self.__stt.add_npc_line(next_sentence.text)
             #if there is a next sentence and it actually has content, return it as something for an NPC to say
             if self.last_sentence_audio_length > 0:
                 logger.debug(f'Waiting {round(self.last_sentence_audio_length, 1)} seconds for last voiceline to play')

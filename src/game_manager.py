@@ -424,14 +424,17 @@ class GameStateManager:
         if not self.__talk.context.npcs_in_conversation.contains_multiple_npcs() and is_npc_speaking_first and not self.__conv_has_narrator:
             character_to_talk = self.__talk.context.npcs_in_conversation.last_added_character
             if character_to_talk:
-                self.__talk.output_manager.tts.change_voice(
-                    character_to_talk.tts_voice_model, 
-                    character_to_talk.in_game_voice_model, 
-                    character_to_talk.csv_in_game_voice_model, 
-                    character_to_talk.advanced_voice_model, 
-                    character_to_talk.voice_accent, 
-                    voice_gender=character_to_talk.gender, 
-                    voice_race=character_to_talk.race
-                )
+                try:
+                    self.__talk.output_manager.tts.change_voice(
+                        character_to_talk.tts_voice_model,
+                        character_to_talk.in_game_voice_model,
+                        character_to_talk.csv_in_game_voice_model,
+                        character_to_talk.advanced_voice_model,
+                        character_to_talk.voice_accent,
+                        voice_gender=character_to_talk.gender,
+                        voice_race=character_to_talk.race
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not preload voice model for {character_to_talk.name}: {e}. Conversation will continue without preloaded voice.")
             else:
                 return self.error_message("Could not load initial character to talk to. Please try again.")
