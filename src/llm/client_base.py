@@ -275,24 +275,64 @@ class ClientBase(AIClient):
                         self._startup_async_client = None # do not reuse the same client
                     else:
                         async_client = self.generate_async_client()
-                    
+
                     # Dict to track partial tool calls by index
                     accumulated_tool_calls = {}
-                    
-                    async for chunk in await async_client.chat.completions.create(
-                        model=self.model_name, 
-                        messages=openai_messages, 
-                        stream=True,
-                        **request_params,
-                    ):
+
+                    # Attempt the API call — may retry on recoverable errors
+                    try:
+                        response_stream = await async_client.chat.completions.create(
+                            model=self.model_name,
+                            messages=openai_messages,
+                            stream=True,
+                            **request_params,
+                        )
+                    except Exception as api_error:
+                        error_str = str(api_error)
+                        error_lower = error_str.lower()
+                        retry = False
+
+                        # Model doesn't support tool use (OpenRouter 404)
+                        if "tools" in request_params and "tool use" in error_lower:
+                            logger.warning(f"Model {self.model_name} does not support tool use — retrying without tools")
+                            request_params.pop("tools", None)
+                            retry = True
+
+                        # max_tokens / max_output_tokens below minimum (e.g. reasoning models like GPT-5.2)
+                        if ("max_output_tokens" in error_lower or "max_tokens" in error_lower) and "minimum" in error_lower:
+                            old_val = request_params.get("max_tokens", "N/A")
+                            logger.warning(f"max_tokens={old_val} is below the model's minimum — retrying without max_tokens limit")
+                            request_params.pop("max_tokens", None)
+                            request_params.pop("max_output_tokens", None)
+                            retry = True
+
+                        # reasoning_effort not supported by this model
+                        if "reasoning_effort" in request_params and ("reasoning" in error_lower or "parameter" in error_lower):
+                            logger.warning(f"Model {self.model_name} does not support reasoning_effort — retrying without it")
+                            request_params.pop("reasoning_effort", None)
+                            retry = True
+
+                        if retry:
+                            await async_client.close()
+                            async_client = self.generate_async_client()
+                            response_stream = await async_client.chat.completions.create(
+                                model=self.model_name,
+                                messages=openai_messages,
+                                stream=True,
+                                **request_params,
+                            )
+                        else:
+                            raise
+
+                    async for chunk in response_stream:
                         try:
                             if chunk and chunk.choices and chunk.choices[0].delta:
                                 delta = chunk.choices[0].delta
-                                
+
                                 # Handle regular content
                                 if delta.content:
                                     yield ("content", delta.content)
-                                
+
                                 # Accumulate tool calls by index
                                 if delta.tool_calls:
                                     for tool_call in delta.tool_calls:
@@ -306,7 +346,7 @@ class ClientBase(AIClient):
                                                     "arguments": ""
                                                 }
                                             }
-                                        
+
                                         # Accumulate the parts
                                         if tool_call.id:
                                             accumulated_tool_calls[idx]["id"] = tool_call.id
@@ -314,11 +354,11 @@ class ClientBase(AIClient):
                                             accumulated_tool_calls[idx]["function"]["name"] += tool_call.function.name
                                         if tool_call.function and tool_call.function.arguments:
                                             accumulated_tool_calls[idx]["function"]["arguments"] += tool_call.function.arguments
-                                
+
                         except Exception as e:
                             logger.error(f"LLM API Connection Error: {e}")
                             break
-                    
+
                     # After streaming completes, yield any accumulated tool calls
                     if accumulated_tool_calls:
                         tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]

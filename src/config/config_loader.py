@@ -250,6 +250,7 @@ class ConfigLoader:
             # if self.llm_api == "Custom":
             #     self.llm_api = self.__definitions.get_string_value("llm_custom_service_url")
             self.custom_token_count = self.__definitions.get_int_value("custom_token_count")
+            self.reasoning_effort = self.__definitions.get_string_value("reasoning_effort")
             try:
                 self.llm_params: dict[str, Any] | None = json.loads(self.__definitions.get_string_value("llm_params").replace('\n', ''))
             except Exception as e:

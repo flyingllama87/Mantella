@@ -88,6 +88,18 @@ class LLMDefinitions:
         return ConfigValueFloat("wait_time_buffer","Wait Time Buffer",description, 0, -999, 999,tags=[ConfigValueTag.advanced,ConfigValueTag.share_row])
     
     @staticmethod
+    def get_reasoning_effort_config_value() -> ConfigValue:
+        description = """Controls reasoning effort for models that support it (e.g. OpenAI o-series, DeepSeek R1).
+                        Models marked with '⚠️ Reasoning' in the model list support this setting.
+                        - Default: Use the model's built-in default behaviour.
+                        - Low / Medium / High: Control how much effort the model spends on internal reasoning before responding.
+                        Higher effort produces more thoughtful responses but is slower and uses more tokens.
+                        This setting is ignored by models that don't support reasoning."""
+        return ConfigValueSelection("reasoning_effort", "Reasoning Effort", description, "Default",
+                                    ["Default", "Low", "Medium", "High"],
+                                    tags=[ConfigValueTag.advanced, ConfigValueTag.share_row])
+
+    @staticmethod
     def get_llm_params_config_value() -> ConfigValue:
         value = """{
                         "max_tokens": 250,

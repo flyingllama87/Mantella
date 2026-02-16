@@ -82,11 +82,22 @@ class DiagnosticsRunner:
             }
             base_url = endpoints.get(service.strip().lower(), service)
             client = OpenAI(api_key=api_key, base_url=base_url)
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": "Say OK"}],
-                max_tokens=3,
-            )
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": "Say OK"}],
+                    max_tokens=10,
+                )
+            except Exception as first_err:
+                err_str = str(first_err).lower()
+                # Some models (reasoning/GPT-5.2) reject low max_tokens — retry without it
+                if "max_tokens" in err_str or "max_output_tokens" in err_str:
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": "Say OK"}],
+                    )
+                else:
+                    raise
             client.close()
             if response and response.choices:
                 lines.append(f"- &#x2705; Test completion succeeded (model responds)")

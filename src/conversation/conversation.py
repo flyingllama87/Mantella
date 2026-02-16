@@ -34,6 +34,7 @@ class conversation_continue_type(Enum):
 class Conversation:
     TOKEN_LIMIT_PERCENT: float = 0.9
     TOKEN_LIMIT_RELOAD_MESSAGES: float = 0.1
+    ACTION_RESPONSE_TIMEOUT: float = 30.0  # seconds to wait for game action response before auto-resuming
     """Controls the flow of a conversation."""
     def __init__(self, context_for_conversation: Context, output_manager: ChatManager, rememberer: Remembering, llm_client: AIClient, stt: Transcriber | None, mic_input: bool, mic_ptt: bool, game = None) -> None:
         
@@ -77,6 +78,7 @@ class Conversation:
         self.last_sentence_start_time = time.time()
         self.__end_conversation_keywords = utils.parse_keywords(context_for_conversation.config.end_conversation_keyword)
         self.__awaiting_action_result: bool = False
+        self.__action_wait_start: float = 0.0
 
     @property
     def has_already_ended(self) -> bool:
@@ -162,6 +164,7 @@ class Conversation:
         if next_sentence and len(next_sentence.text.strip()) == 0 and len(next_sentence.actions) > 0:
             if FunctionManager.any_action_requires_response(next_sentence.actions):
                 self.__awaiting_action_result = True
+                self.__action_wait_start = time.time()
             return comm_consts.KEY_REPLYTYPE_NPCACTION, next_sentence
         elif next_sentence and len(next_sentence.text) > 0:
             if {'identifier': comm_consts.ACTION_REMOVECHARACTER} in next_sentence.actions:
@@ -217,7 +220,15 @@ class Conversation:
         player_character = self.__context.npcs_in_conversation.get_player_character()
         if not player_character:
             return '', False, None # If there is no player in the conversation, exit here
-        
+
+        # If we were waiting for an action response from the game (e.g.
+        # reportcrime) but the player has spoken, the conversation has moved
+        # past the action phase — clear the flag so the timeout doesn't
+        # fire and start a competing LLM generation.
+        if self.__awaiting_action_result:
+            logger.log(23, "Player input received while awaiting action result — clearing action wait")
+            self.__awaiting_action_result = False
+
         events_need_updating: bool = False
 
         with self.__generation_start_lock: #This lock makes sure no new generation by the LLM is started while we clear this
@@ -366,8 +377,11 @@ class Conversation:
 
     @utils.time_it
     def resume_after_interrupting_action(self) -> bool:
-        """Inject a synthetic user message once action results arrive so the LLM can continue
-        
+        """Inject a synthetic user message once action results arrive so the LLM can continue.
+
+        If the game doesn't respond with events within ACTION_RESPONSE_TIMEOUT seconds,
+        the action is considered failed/ignored and the conversation resumes automatically.
+
         Returns:
             bool: True if conversation was resumed, False if no action was awaiting or no events available
         """
@@ -375,10 +389,15 @@ class Conversation:
             return False
 
         pending_events = self.__context.get_context_ingame_events()
-        if not pending_events:
+        timed_out = (time.time() - self.__action_wait_start) > self.ACTION_RESPONSE_TIMEOUT
+
+        if not pending_events and not timed_out:
             return False
 
-        # Add synthetic user message containing just the new in-game events
+        if timed_out and not pending_events:
+            logger.warning(f"Action response timed out after {self.ACTION_RESPONSE_TIMEOUT}s — resuming conversation without action result")
+
+        # Add synthetic user message containing just the new in-game events (if any)
         player_character = self.__context.npcs_in_conversation.get_player_character()
         player_name = player_character.name if player_character else ""
         synthetic_message = UserMessage(self.__context.config, "", player_name, True)
@@ -390,7 +409,7 @@ class Conversation:
         self.__awaiting_action_result = False
         # Do not allow the LLM to use tools a second time in a row (can cause an endless loop)
         self.__start_generating_npc_sentences(allow_tool_use=False)
-        
+
         return True
 
     @utils.time_it

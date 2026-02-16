@@ -722,9 +722,9 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
             self._stream.close()
             self._stream = None
         
-        # Wait for processing thread to finish
+        # Wait for processing thread to finish (with timeout to prevent hanging on shutdown)
         if self._processing_thread:
-            self._processing_thread.join()  # timeout=1.0 Add timeout to prevent hanging
+            self._processing_thread.join(timeout=2.0)
             self._processing_thread = None
         
         # Clear queue
