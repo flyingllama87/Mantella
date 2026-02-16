@@ -6,6 +6,7 @@ import src.utils as utils
 logger = utils.get_logger()
 
 from src.llm.client_base import ClientBase
+from src.config.definitions.stt_definitions import STTDefinitions
 from src.config.types.config_value_path import ConfigValuePath
 from src.config.types.config_value_bool import ConfigValueBool
 from src.config.types.config_value_float import ConfigValueFloat
@@ -311,6 +312,11 @@ class SettingsUIConstructor(ConfigValueVisitor):
             }
         }
 
+        # Device listing handlers (simple refresh pattern)
+        device_handlers: Dict[str, Callable[[], list[str]]] = {
+            "audio_input_device": STTDefinitions.get_audio_input_devices,
+        }
+
         def update_model_list() -> gr.Dropdown:
             current_config = self.__identifier_to_config_value[config_value.identifier]
             return create_input_component(current_config)
@@ -318,6 +324,19 @@ class SettingsUIConstructor(ConfigValueVisitor):
         def create_input_component(raw_config_value: ConfigValue) -> gr.Dropdown:
             config_value = typing.cast(ConfigValueSelection, raw_config_value)
             
+            # Handle device listing cases (simple refresh)
+            device_lister = device_handlers.get(config_value.identifier)
+            if device_lister:
+                choices = device_lister()
+                return gr.Dropdown(
+                    value=config_value.value,
+                    choices=choices,
+                    multiselect=False,
+                    allow_custom_value=config_value.allows_custom_value,
+                    show_label=False,
+                    container=False
+                )
+
             # Handle special cases
             handler = special_handlers.get(config_value.identifier)
             if handler:
@@ -351,10 +370,12 @@ class SettingsUIConstructor(ConfigValueVisitor):
                 container=False
             )
 
-        # Add update button only for special cases
+        # Add update/refresh button for special cases
         additional_buttons: list[tuple[str, Callable[[], Any]]] = []
         if config_value.identifier in special_handlers:
             additional_buttons = [("Update", update_model_list)]
+        elif config_value.identifier in device_handlers:
+            additional_buttons = [("Refresh", update_model_list)]
 
         self.__create_config_value_ui_element(
             config_value,

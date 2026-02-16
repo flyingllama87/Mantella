@@ -47,6 +47,7 @@ class MantellaConfigValueDefinitionsNew:
         #llm_category.add_config_value(LLMDefinitions.get_llm_custom_service_url_config_value())
         llm_category.add_config_value(LLMDefinitions.get_wait_time_buffer_config_value())
         # llm_category.add_config_value(LLMDefinitions.get_try_filter_narration())
+        llm_category.add_config_value(LLMDefinitions.get_reasoning_effort_config_value())
         llm_category.add_config_value(LLMDefinitions.get_llm_params_config_value())
         # llm_category.add_config_value(LLMDefinitions.get_stop_llm_generation_on_assist_keyword())
         llm_category.add_config_value(LLMDefinitions.get_narration_handling())
@@ -84,6 +85,7 @@ class MantellaConfigValueDefinitionsNew:
         result.add_base_group(tts_category)
 
         stt_category = ConfigValueGroup("STT", "Speech-to-Text", "Settings for the STT methods Mantella supports.", on_value_change_callback)
+        stt_category.add_config_value(STTDefinitions.get_audio_input_device_config_value())
         stt_category.add_config_value(STTDefinitions.get_audio_threshold_config_value())
         stt_category.add_config_value(STTDefinitions.get_allow_interruption_config_value()) 
         stt_category.add_config_value(STTDefinitions.get_save_mic_input_config_value())

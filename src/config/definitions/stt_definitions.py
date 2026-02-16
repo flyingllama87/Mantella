@@ -13,6 +13,29 @@ class STTDefinitions:
             super().__init__()
     
     @staticmethod
+    def get_audio_input_devices() -> list[str]:
+        """Enumerate available audio input devices via sounddevice."""
+        choices = ["Default"]
+        try:
+            import sounddevice as sd
+            devices = sd.query_devices()
+            for i, d in enumerate(devices):
+                if d['max_input_channels'] > 0:
+                    choices.append(f"{i}: {d['name']} ({d['max_input_channels']}ch)")
+        except Exception:
+            pass
+        return choices
+
+    @staticmethod
+    def get_audio_input_device_config_value() -> ConfigValue:
+        description = """Select which microphone / audio input device to use.
+                        Set to 'Default' to use the system default input device.
+                        You can also manually enter a device index number or part of the device name.
+                        Click 'Refresh' to re-scan available devices."""
+        options = STTDefinitions.get_audio_input_devices()
+        return ConfigValueSelection("audio_input_device", "Audio Input Device", description, "Default", options, allows_free_edit=True)
+
+    @staticmethod
     def get_audio_threshold_config_value() -> ConfigValue:
         audio_threshold_description = """Controls how much background noise is filtered out (from 0-1).
                                         If the mic is not picking up speech, try lowering this value.

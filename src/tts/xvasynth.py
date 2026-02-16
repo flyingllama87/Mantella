@@ -13,6 +13,8 @@ import sys
 from src.tts.synthesization_options import SynthesizationOptions
 from src.config.definitions.game_definitions import GameEnum
 
+ON_POSIX = 'posix' in sys.builtin_module_names
+
 logger = utils.get_logger()
 
 
@@ -34,7 +36,12 @@ class xVASynth(TTSable):
         self.__synthesize_batch_url = 'http://127.0.0.1:8008/synthesize_batch'
         self.__loadmodel_url = 'http://127.0.0.1:8008/loadModel'
         self.__setvocoder_url = 'http://127.0.0.1:8008/setVocoder'
-        self.__model_path = f"{self.__xvasynth_path}/resources/app/models/{self._game.base_game.display_name}/"
+        game_name = self._game.base_game.display_name
+        model_path = f"{self.__xvasynth_path}/resources/app/models/{game_name}/"
+        # On case-sensitive filesystems (Linux), the folder may be lowercase
+        if not os.path.isdir(model_path):
+            model_path = f"{self.__xvasynth_path}/resources/app/models/{game_name.lower()}/"
+        self.__model_path = model_path
         self.__pace = config.pace
         self.__use_sr = config.use_sr
         self.__use_cleanup = config.use_cleanup
@@ -314,14 +321,24 @@ class xVASynth(TTSable):
 
     @utils.time_it
     def _run_xvasynth_server(self):
+        if ON_POSIX:
+            logger.error(
+                f'xVASynth cannot be auto-launched on Linux because its server is a Windows binary. '
+                f'Please either:\n'
+                f'  1. Start xVASynth manually (e.g. via Proton/Wine) before launching Mantella, or\n'
+                f'  2. Switch to Piper or XTTS in the Mantella UI under Text-to-Speech -> TTS Service.'
+            )
+            raise TTSServiceFailure()
+
         try:
+            server_exe = f'{self.__xvasynth_path}/resources/app/cpython_{self.__process_device}/server.exe'
             # start the process without waiting for a response
             if (self._tts_print):
                 # print subprocess output
-                Popen(f'{self.__xvasynth_path}/resources/app/cpython_{self.__process_device}/server.exe', cwd=self.__xvasynth_path, stdout=None, stderr=None)
+                Popen(server_exe, cwd=self.__xvasynth_path, stdout=None, stderr=None)
             else:
                 # ignore output
-                Popen(f'{self.__xvasynth_path}/resources/app/cpython_{self.__process_device}/server.exe', cwd=self.__xvasynth_path, stdout=DEVNULL, stderr=DEVNULL)
+                Popen(server_exe, cwd=self.__xvasynth_path, stdout=DEVNULL, stderr=DEVNULL)
 
             time.sleep(1)
         except:

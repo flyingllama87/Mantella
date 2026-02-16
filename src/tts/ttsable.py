@@ -1,11 +1,19 @@
 from abc import ABC, abstractmethod
 import datetime
-import winsound
+import platform
+if platform.system() == "Windows":
+    import winsound
+    from subprocess import STARTUPINFO, STARTF_USESHOWWINDOW
+else:
+    STARTUPINFO = None
+    STARTF_USESHOWWINDOW = 0
+
+import re
 from src.config.config_loader import ConfigLoader
 import src.utils as utils
 import os
 from pathlib import Path
-from subprocess import DEVNULL, STARTUPINFO, STARTF_USESHOWWINDOW
+from subprocess import DEVNULL
 import subprocess
 import time
 from src.tts.synthesization_options import SynthesizationOptions
@@ -30,7 +38,7 @@ class TTSable(ABC):
         self._times_checked = 0
         self._tts_print = config.tts_print # to print output to console
         self._save_folder = config.save_folder
-        self._output_path = os.getenv('TMP')
+        self._output_path = os.getenv('TMP') or os.getenv('TMPDIR') or '/tmp'
         self._voiceline_folder = f"{self._output_path}/voicelines"
         os.makedirs(f"{self._voiceline_folder}/save", exist_ok=True)
         self._language = config.language
@@ -49,6 +57,14 @@ class TTSable(ABC):
         logger.debug(f'last_voice: {self._last_voice}, voice: {voice}, in_game_voice: {in_game_voice}, csv_in_game_voice: {csv_in_game_voice}, advanced_voice_model: {advanced_voice_model}, voice_accent: {voice_accent}')
         if self._last_voice == '' or (isinstance(self._last_voice, str) and self._last_voice.lower() not in {isinstance(v, str) and v.lower() for v in {voice, in_game_voice, csv_in_game_voice, advanced_voice_model, f'fo4_{voice}'}}):
             self.change_voice(voice, in_game_voice, csv_in_game_voice, advanced_voice_model, voice_accent)
+
+        # Strip leaked LLM function-call markup that occasionally slips
+        # through parsing (e.g. "<function=Emote> <parameter=...>")
+        voiceline = re.sub(r'</?(?:function|parameter|tool_call)[^>]*>', '', voiceline)
+        voiceline = re.sub(r'(?i)^call\s*$', '', voiceline)
+        if not voiceline.strip():
+            logger.warning("TTS: voiceline was empty after stripping LLM markup; skipping synthesis")
+            raise ValueError("Empty voiceline after sanitization")
 
         logger.log(22, f'Synthesizing voiceline: {voiceline.strip()}')
 
@@ -95,12 +111,14 @@ class TTSable(ABC):
                 logger.warning(f'{type(ex).__name__}: {ex.args}')
 
             if (self._lip_generation_enabled == 'enabled') or (self._lip_generation_enabled == 'lazy' and not synth_options.is_first_line_of_response):
-                try:
-                    if os.path.exists(new_lip_file_name):
-                        os.remove(new_lip_file_name)
-                    os.rename(final_voiceline_file.replace(".wav", ".lip"), new_lip_file_name)
-                except:
-                    logger.error(f'Could not rename {final_voiceline_file.replace(".wav", ".lip")}')
+                lip_source = final_voiceline_file.replace(".wav", ".lip")
+                if os.path.exists(lip_source):
+                    try:
+                        if os.path.exists(new_lip_file_name):
+                            os.remove(new_lip_file_name)
+                        os.rename(lip_source, new_lip_file_name)
+                    except:
+                        logger.error(f'Could not rename {lip_source}')
             try:
                 fuz_file_name = final_voiceline_file.replace(".wav", ".fuz")
                 if (os.path.exists(fuz_file_name)):
@@ -156,16 +174,23 @@ class TTSable(ABC):
             voiceline (str): The corresponding text voiceline used to help lip sync generation
             skip_lip_generation (bool): Whether to skip the lip file generation process and use a placeholder .lip file instead (useful for when FaceFXWrapper is experiencing issues)
         """
+        # Lip sync tools (LipGenerator, FaceFXWrapper, LipFuzer) are Windows-only
+        if platform.system() != "Windows":
+            return
+
         @utils.time_it
         def run_facefx_command(command, facefx_path) -> None:
-            startupinfo = STARTUPINFO()
-            startupinfo.dwFlags |= STARTF_USESHOWWINDOW
-            
-            batch_file_path = Path(facefx_path) / "run_mantella_command.bat"
-            with open(batch_file_path, 'w', encoding='utf-8') as file:
-                file.write(f"@echo off\n{command} >nul 2>&1")
+            if platform.system() == "Windows":
+                startupinfo = STARTUPINFO()
+                startupinfo.dwFlags |= STARTF_USESHOWWINDOW
+                
+                batch_file_path = Path(facefx_path) / "run_mantella_command.bat"
+                with open(batch_file_path, 'w', encoding='utf-8') as file:
+                    file.write(f"@echo off\n{command} >nul 2>&1")
 
-            subprocess.run(batch_file_path, cwd=facefx_path, creationflags=subprocess.CREATE_NO_WINDOW)
+                subprocess.run(batch_file_path, cwd=facefx_path, creationflags=subprocess.CREATE_NO_WINDOW)
+            else:
+                logger.warning("FaceFX/LipGen tools are Windows-only and cannot be run natively on Linux.")
 
 
         def copy_placeholder_lip_file(lip_file: str, game: str) -> None:
@@ -196,8 +221,13 @@ class TTSable(ABC):
 
                 #Using subprocess.run to retrieve the exit code
                 args: str = f'"{LipGen_path}" "{wav_file}" "{voiceline}" -Language:{language_parm} -Automated'
+                
+                creation_flags = 0
+                if platform.system() == "Windows":
+                    creation_flags = subprocess.CREATE_NO_WINDOW
+
                 run_result: subprocess.CompletedProcess = subprocess.run(args, cwd=self._voiceline_folder, stderr=DEVNULL, stdout=DEVNULL,
-                                                                         creationflags=subprocess.CREATE_NO_WINDOW)
+                                                                         creationflags=creation_flags)
                 if run_result.returncode != 0 and len(voiceline) > 11 :
                     #Very short sentences sometimes fail to generate a .lip file, so skip warning
                     logger.warning(f'Lipgen returned {run_result.returncode}')
@@ -242,8 +272,13 @@ class TTSable(ABC):
 
             if os.path.exists(LipFuz_path):
                 args: str = f'"{LipFuz_path}" -s "{self._voiceline_folder}" -d "{self._voiceline_folder}" -a wav --norec'
+                
+                creation_flags = 0
+                if platform.system() == "Windows":
+                    creation_flags = subprocess.CREATE_NO_WINDOW
+
                 run_result: subprocess.CompletedProcess = subprocess.run(args, cwd=self._voiceline_folder, stdout=DEVNULL, stderr=DEVNULL,
-                                                                         creationflags=subprocess.CREATE_NO_WINDOW)
+                                                                         creationflags=creation_flags)
                 if run_result.returncode != 0:
                     logger.warning(f'LipFuzer returned {run_result.returncode}')
             else:

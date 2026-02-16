@@ -1,4 +1,5 @@
 import sys
+import math
 import numpy as np
 from faster_whisper import WhisperModel
 from src.config.config_loader import ConfigLoader
@@ -15,7 +16,12 @@ import threading
 import time
 import os
 import wave
-from moonshine_onnx import MoonshineOnnxModel, load_tokenizer
+from scipy.signal import resample_poly
+try:
+    from moonshine_onnx import MoonshineOnnxModel, load_tokenizer
+except ImportError:
+    MoonshineOnnxModel = None
+    load_tokenizer = None
 import onnxruntime as ort
 from scipy.io import wavfile
 from sounddevice import InputStream
@@ -39,6 +45,7 @@ class Transcriber:
     @utils.time_it
     def __init__(self, config: ConfigLoader, stt_secret_key_file: str, secret_key_file: str):
         self.loglevel = 27
+        logger.log(27, f"STT: Initializing Transcriber (service={config.stt_service}, language={config.stt_language})")
         self.language = config.stt_language
         self.task = "translate" if config.stt_translate == 1 else "transcribe"
         self.stt_service = config.stt_service
@@ -62,6 +69,9 @@ class Transcriber:
         self.pause_threshold = config.pause_threshold
         self._temporary_pause_override: float | None = None  # Temporary pause threshold for Listen action
         self.audio_threshold = config.audio_threshold
+        self.audio_input_device = self._resolve_audio_device(config.audio_input_device)
+        self._update_native_rate()
+
         logger.log(self.loglevel, f"Audio threshold set to {self.audio_threshold}. If the mic is not picking up your voice, try lowering this `Speech-to-Text`->`Audio Threshold` value in the Mantella UI. If the mic is picking up too much background noise, try increasing this value.\n")
 
         self.__audio_input_error_count = 0
@@ -71,7 +81,7 @@ class Transcriber:
         
         self.__save_mic_input = config.save_mic_input
         if self.__save_mic_input:
-            self.__mic_input_path: str = config.save_folder+'data\\tmp\\mic'
+            self.__mic_input_path: str = os.path.join(config.save_folder, 'data', 'tmp', 'mic')
             os.makedirs(self.__mic_input_path, exist_ok=True)
 
         self.__stt_secret_key_file = stt_secret_key_file
@@ -81,7 +91,7 @@ class Transcriber:
         if (self.stt_service == 'whisper') and (self.__api_key) and ('openai' in self.whisper_url) and (self.external_whisper_service):
             self.__initial_client = self.__generate_sync_client() # initialize first client in advance to save time
 
-        self.__ignore_list = ['', 'thank you', 'thank you for watching', 'thanks for watching', 'the transcript is from the', 'the', 'thank you very much', "thank you for watching and i'll see you in the next video", "we'll see you in the next video", 'see you next time']
+        self.__ignore_list = ['', 'thank you', 'thank you for watching', 'thanks for watching', 'the transcript is from the', 'the', 'thank you very much', "thank you for watching and i'll see you in the next video", "we'll see you in the next video", 'see you next time', 'you']
         
         self.transcribe_model: WhisperModel | MoonshineOnnxModel | None = None
         if self.stt_service == 'whisper':
@@ -97,6 +107,9 @@ class Transcriber:
                 else:
                     self.transcribe_model = WhisperModel(self.whisper_model, device=self.process_device, compute_type="float32")
         else:
+            if MoonshineOnnxModel is None:
+                raise ImportError("Moonshine STT service is selected but 'moonshine_onnx' is not installed. Install it with: pip install moonshine-onnx")
+
             if self.language != 'en':
                 logger.warning(f"Selected language is '{self.language}', but Moonshine only supports English. Please change the selected speech-to-text model to Whisper in `Speech-to-Text`->`STT Service` in the Mantella UI")
 
@@ -132,6 +145,101 @@ class Transcriber:
         self._transcription_ready = threading.Event()
         self._consecutive_empty_count = 0
         self._max_consecutive_empty = 10
+
+        # NPC echo detection: store recent NPC voicelines so we can
+        # filter out transcriptions that are just the mic picking up
+        # game audio from speakers.
+        self._recent_npc_lines: list[str] = []
+
+    @staticmethod
+    def _resolve_audio_device(device_setting: str) -> int | None:
+        """Resolve the audio device setting to a sounddevice device index.
+
+        Args:
+            device_setting: 'Default', a device index string, a dropdown value like
+                            '2: USB Mic (2ch)', or a substring of a device name.
+
+        Returns:
+            Device index (int) or None for system default.
+        """
+        import sounddevice as sd
+        import re
+
+        if not device_setting or device_setting.strip().lower() == 'default':
+            return None
+
+        value = device_setting.strip()
+
+        # Try dropdown format "N: Device Name (Xch)"
+        m = re.match(r'^(\d+):\s', value)
+        if m:
+            idx = int(m.group(1))
+            try:
+                device_info = sd.query_devices(idx)
+                if device_info['max_input_channels'] > 0:
+                    logger.log(27, f"Audio input device set to #{idx}: {device_info['name']}")
+                    return idx
+            except sd.PortAudioError:
+                pass
+
+        # Try as plain integer index
+        try:
+            idx = int(value)
+            device_info = sd.query_devices(idx)
+            if device_info['max_input_channels'] > 0:
+                logger.log(27, f"Audio input device set to #{idx}: {device_info['name']}")
+                return idx
+        except (ValueError, sd.PortAudioError):
+            pass
+
+        # Try as substring match on device name
+        devices = sd.query_devices()
+        # Strip dropdown formatting ("N: Device Name (Xch)" -> "Device Name")
+        # so the substring match works even when device indices have shifted.
+        name_for_match = re.sub(r'^\d+:\s*', '', value)
+        name_for_match = re.sub(r'\s*\(\d+ch\)\s*$', '', name_for_match)
+        needle = name_for_match.lower()
+        for i, d in enumerate(devices):
+            if needle in d['name'].lower() and d['max_input_channels'] > 0:
+                logger.log(27, f"Audio input device matched '{device_setting}' -> #{i}: {d['name']}")
+                return i
+
+        logger.warning(f"Could not find audio input device '{device_setting}', using system default")
+        return None
+
+    def _update_native_rate(self) -> None:
+        """Query the audio device's native sample rate and compute resampling parameters."""
+        import sounddevice as sd
+        try:
+            if self.audio_input_device is not None:
+                dev_info = sd.query_devices(self.audio_input_device)
+            else:
+                try:
+                    dev_info = sd.query_devices(kind='input')
+                except Exception:
+                    # PortAudio has no default input device (-1); find first input device
+                    for i, d in enumerate(sd.query_devices()):
+                        if d['max_input_channels'] > 0:
+                            dev_info = d
+                            self.audio_input_device = i
+                            logger.log(self.loglevel, f"No default input device; using #{i}: {d['name']}")
+                            break
+                    else:
+                        raise RuntimeError("No input audio devices found")
+            self._native_rate = int(dev_info['default_samplerate'])
+        except Exception:
+            self._native_rate = self.SAMPLING_RATE  # fallback to 16 kHz
+
+        if self._native_rate != self.SAMPLING_RATE:
+            self._native_blocksize = int(self.CHUNK_SIZE * self._native_rate / self.SAMPLING_RATE)
+            g = math.gcd(self.SAMPLING_RATE, self._native_rate)
+            self._resample_up = self.SAMPLING_RATE // g
+            self._resample_down = self._native_rate // g
+            logger.log(self.loglevel, f"Audio device native rate is {self._native_rate} Hz; will resample to {self.SAMPLING_RATE} Hz (ratio {self._resample_down}:{self._resample_up})")
+        else:
+            self._native_blocksize = self.CHUNK_SIZE
+            self._resample_up = 1
+            self._resample_down = 1
 
     @property
     def is_listening(self) -> bool:
@@ -189,7 +297,7 @@ class Transcriber:
         if self.external_whisper_service:
             try: # first check mod folder for stt secret key
                 mod_parent_folder = str(Path(utils.resolve_path()).parent.parent.parent)
-                with open(mod_parent_folder+'\\'+self.__stt_secret_key_file, 'r') as f:
+                with open(os.path.join(mod_parent_folder, self.__stt_secret_key_file), 'r') as f:
                     api_key: str = f.readline().strip()
             except: # check locally (same folder as exe) for stt secret key
                 try:
@@ -198,7 +306,7 @@ class Transcriber:
                 except:
                     try: # first check mod folder for secret key
                         mod_parent_folder = str(Path(utils.resolve_path()).parent.parent.parent)
-                        with open(mod_parent_folder+'\\'+self.__secret_key_file, 'r') as f:
+                        with open(os.path.join(mod_parent_folder, self.__secret_key_file), 'r') as f:
                             api_key: str = f.readline().strip()
                     except: # check locally (same folder as exe) for secret key
                         with open(self.__secret_key_file, 'r') as f:
@@ -232,12 +340,85 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
         if self.proactive_mic_mode:
             logger.log(self.loglevel, f'Interim transcription: {transcription}')
         
+        # Filter prompt-echo hallucinations (Whisper repeating its initial_prompt
+        # back when it receives silence or short noise bursts)
+        if transcription and self._is_hallucination(transcription):
+            logger.debug(f"STT: Filtered hallucination: '{transcription.strip()}'")
+            transcription = ''
+
         # Only update the transcription if it contains a value, otherwise keep the existing transcription
         if transcription:
             return transcription
         else:
             self._consecutive_empty_count += 1
             return self._current_transcription
+
+
+    def _is_hallucination(self, text: str) -> bool:
+        """Detect Whisper hallucinations (prompt echoes, repetitive phrases)
+        and NPC audio echo (mic picking up game audio from speakers).
+
+        Whisper tends to echo back its initial_prompt when given silence or
+        very short noise bursts.  It also sometimes produces repetitive
+        phrases like 'Thank you. Thank you. Thank you.'
+        """
+        cleaned = text.strip().lower()
+        if not cleaned:
+            return False
+
+        # Prompt-echo: the prompt is "This is a conversation with <NPC> in <location>."
+        # Whisper hallucinates this exact text (or repetitions of it) from noise.
+        if 'this is a conversation with' in cleaned:
+            return True
+
+        # Repetitive hallucination: same sentence repeated multiple times
+        sentences = [s.strip() for s in cleaned.replace('!', '.').replace('?', '.').split('.') if s.strip()]
+        if len(sentences) >= 2 and len(set(sentences)) == 1:
+            return True
+
+        # NPC echo: the microphone picked up NPC voice lines playing through
+        # speakers and Whisper transcribed them as player speech.  Compare
+        # against recently spoken NPC lines using word-level similarity.
+        for npc_line in self._recent_npc_lines:
+            if self._text_similarity(cleaned, npc_line) > 0.5:
+                return True
+
+        return False
+
+
+    def add_npc_line(self, text: str) -> None:
+        """Register a recently spoken NPC voiceline for echo detection.
+
+        Call this whenever an NPC sentence is sent for TTS synthesis so the
+        STT can filter out transcriptions that are just the mic picking up
+        game audio from speakers.
+        """
+        line = text.strip().lower()
+        if line:
+            self._recent_npc_lines.append(line)
+            # Keep only the last 20 lines (roughly the last few exchanges)
+            if len(self._recent_npc_lines) > 20:
+                self._recent_npc_lines = self._recent_npc_lines[-20:]
+
+    def clear_npc_lines(self) -> None:
+        """Clear recent NPC lines (call when a new conversation starts)."""
+        self._recent_npc_lines.clear()
+
+    @staticmethod
+    def _text_similarity(a: str, b: str) -> float:
+        """Compute word-level containment similarity between two strings.
+
+        Returns the fraction of words in the shorter text that also appear
+        in the longer text.  This catches both exact echoes and partial
+        matches (e.g. Whisper transcribing "Stay in the house" from the
+        NPC line "Sigrid! Stay in the house!").
+        """
+        words_a = set(a.split())
+        words_b = set(b.split())
+        if not words_a or not words_b:
+            return 0.0
+        intersection = words_a & words_b
+        return len(intersection) / min(len(words_a), len(words_b))
 
 
     @utils.time_it
@@ -323,15 +504,34 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
         self._reset_state()
         self.prompt = prompt
         
-        # Start audio stream
-        self._stream = InputStream(
-            samplerate=self.SAMPLING_RATE,
-            channels=1,
-            blocksize=self.CHUNK_SIZE,
-            dtype=np.float32,
-            callback=self._create_input_callback(self._audio_queue),
-            latency = 'low'
-        )
+        # Start audio stream at the device's native sample rate.
+        # On Linux, opening an ALSA device by index can fail when
+        # PipeWire/PulseAudio already owns it, so fall back to the
+        # system default device (which routes through PipeWire/Pulse).
+        try:
+            self._stream = InputStream(
+                device=self.audio_input_device,
+                samplerate=self._native_rate,
+                channels=1,
+                blocksize=self._native_blocksize,
+                dtype=np.float32,
+                callback=self._create_input_callback(self._audio_queue),
+            )
+        except Exception as e:
+            if self.audio_input_device is not None:
+                logger.warning(f"Could not open audio device #{self.audio_input_device} at {self._native_rate} Hz: {e}. Falling back to system default device.")
+                self.audio_input_device = None
+                self._update_native_rate()
+                self._stream = InputStream(
+                    device=None,
+                    samplerate=self._native_rate,
+                    channels=1,
+                    blocksize=self._native_blocksize,
+                    dtype=np.float32,
+                    callback=self._create_input_callback(self._audio_queue),
+                )
+            else:
+                raise
         self._stream.start()
         
         # Start processing thread
@@ -354,9 +554,21 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
                 chunk, status = self._audio_queue.get(timeout=0.1)
                 if status:
                     if self.__processing_audio_error_count % self.__warning_frequency == 0:
-                        logger.log(23, f"STT WARNING: Processing audio error: {status}")
+                        logger.debug(f"STT: audio stream status: {status}")
                     self.__processing_audio_error_count += 1
-                    continue
+                    # Don't skip the chunk — "input overflow" means some
+                    # prior audio was lost, but this chunk's data is still
+                    # valid.  Discarding it creates gaps that confuse VAD.
+
+                # Resample from native rate to 16 kHz if needed
+                if self._native_rate != self.SAMPLING_RATE:
+                    chunk = resample_poly(chunk, self._resample_up, self._resample_down).astype(np.float32)
+                    # For non-integer ratios (e.g. 44100→16000) the output
+                    # may be ±1 sample off; Silero VAD needs exactly CHUNK_SIZE.
+                    if len(chunk) < self.CHUNK_SIZE:
+                        chunk = np.pad(chunk, (0, self.CHUNK_SIZE - len(chunk)))
+                    elif len(chunk) > self.CHUNK_SIZE:
+                        chunk = chunk[:self.CHUNK_SIZE]
 
                 with self._lock:
                     # Update audio buffer
@@ -426,7 +638,7 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
         def input_callback(indata, frames, time, status):
             if status:
                 if self.__audio_input_error_count % self.__warning_frequency == 0:
-                    logger.log(23, f"STT WARNING: Audio input error: {status}")
+                    logger.debug(f"STT: audio callback status: {status}")
                 self.__audio_input_error_count += 1
             # Store both data and status in queue
             q.put((indata.copy().flatten(), status))
@@ -510,9 +722,9 @@ If you would prefer to run speech-to-text locally, please ensure the `Speech-to-
             self._stream.close()
             self._stream = None
         
-        # Wait for processing thread to finish
+        # Wait for processing thread to finish (with timeout to prevent hanging on shutdown)
         if self._processing_thread:
-            self._processing_thread.join()  # timeout=1.0 Add timeout to prevent hanging
+            self._processing_thread.join(timeout=2.0)
             self._processing_thread = None
         
         # Clear queue

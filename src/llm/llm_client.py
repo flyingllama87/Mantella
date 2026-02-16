@@ -15,6 +15,13 @@ class LLMClient(ClientBase):
     def __init__(self, config: ConfigLoader, secret_key_file: str, image_secret_key_file: str, function_secret_key_file: str = None) -> None:
         super().__init__(config.llm_api, config.llm, config.llm_params, config.custom_token_count, [secret_key_file])
 
+        # Inject reasoning_effort into request params if configured
+        if hasattr(config, 'reasoning_effort') and config.reasoning_effort and config.reasoning_effort.lower() != "default":
+            if self._request_params is None:
+                self._request_params = {}
+            self._request_params["reasoning_effort"] = config.reasoning_effort.lower()
+            logger.info(f"Reasoning effort set to '{config.reasoning_effort.lower()}'")
+
         if self._is_local:
             logger.info(f"Running Mantella with local language model")
         else:

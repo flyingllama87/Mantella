@@ -2,6 +2,7 @@ from src.config.config_loader import ConfigLoader
 from src.tts.ttsable import TTSable
 import subprocess
 import os
+import stat
 import time
 import wave
 from src import utils
@@ -37,7 +38,11 @@ class Piper(TTSable):
         if self._language != 'en':
             logger.warning(f"Selected language is '{self._language}'', but Piper only supports English. Please change the selected text-to-speech model in `Text-to-Speech`->`TTS Service` in the Mantella UI")
         self.__game: Gameable = game
-        self.__piper_path = Path(config.piper_path)
+        piper_path = config.piper_path
+        if not piper_path:
+            # Fall back to {project_root}/piper/ when path is empty (non-integrated mode default)
+            piper_path = os.path.join(utils.resolve_path(), "piper")
+        self.__piper_path = Path(piper_path)
         self.__models_path = self.__piper_path / 'models' / self.__game.game_name_in_filepath / 'low' # TODO: change /low parts of the path to dynamic variables
         self.__selected_voice = None
         self.__waiting_for_voice_load = False
@@ -176,6 +181,7 @@ class Piper(TTSable):
 
             self.__selected_voice = self._select_voice_type(voice, in_game_voice, csv_in_game_voice, advanced_voice_model, self._current_actor_gender, self._current_actor_race)
             model_path = self.__models_path / f'{self.__selected_voice}.onnx'
+            logger.log(self._loglevel, f'Loading Piper model: {self.__selected_voice}')
 
             self.__write_to_stdin(f"load_model {model_path}\n")
             self.__waiting_for_voice_load = True
@@ -187,7 +193,13 @@ class Piper(TTSable):
     @utils.time_it
     def _run_piper(self):
         try:
-            command = self.__piper_path / 'piper.exe'
+            binary_name = 'piper' if ON_POSIX else 'piper.exe'
+            command = self.__piper_path / binary_name
+
+            # On POSIX, ensure the binary has execute permission
+            if ON_POSIX and command.exists() and not os.access(command, os.X_OK):
+                logger.log(self._loglevel, f'Setting execute permission on {command}')
+                command.chmod(command.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
             self.process = subprocess.Popen(
                 command, 

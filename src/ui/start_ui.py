@@ -5,6 +5,7 @@ import gradio as gr
 from src.config.config_loader import ConfigLoader
 from src.http.routes.routeable import routeable
 from src.ui.settings_ui_constructor import SettingsUIConstructor
+from src.ui.diagnostics import DiagnosticsRunner
 import src.utils as utils
 
 logger = utils.get_logger()
@@ -15,6 +16,7 @@ class StartUI(routeable):
     def __init__(self, config: ConfigLoader) -> None:
         super().__init__(config, False)
         self.__constructor = SettingsUIConstructor()
+        self.__diagnostics = DiagnosticsRunner(config)
 
     def create_main_block(self) -> gr.Blocks:
         with gr.Blocks(title="Mantella", fill_height=True, analytics_enabled=False, theme= self.__get_theme(), css=self.__load_css()) as main_block:
@@ -24,6 +26,7 @@ class StartUI(routeable):
             #     self.__generate_chat_page()
             # with gr.Tab("NPC editor", interactive=False):
             #     self.__generate_character_editor_page()
+            self.__generate_diagnostics_page()
 
             with gr.Row(elem_classes="custom-footer"):
                 gr.HTML("""
@@ -45,7 +48,32 @@ class StartUI(routeable):
         return gr.Column()
     
     def __generate_character_editor_page(self):
-        return gr.Column() 
+        return gr.Column()
+
+    def __generate_diagnostics_page(self):
+        with gr.Tab("Diagnostics"):
+            output = gr.Markdown(value="Click a button below to run diagnostics.")
+            with gr.Row():
+                btn_all = gr.Button("Test All", variant="primary")
+            with gr.Row():
+                btn_llm = gr.Button("LLM")
+                btn_tts = gr.Button("TTS")
+                btn_stt = gr.Button("STT")
+                btn_mic = gr.Button("Microphone")
+                btn_mod = gr.Button("Mod Folder")
+                btn_game = gr.Button("Game")
+            with gr.Row():
+                btn_stt_live = gr.Button("Test STT (Live)", variant="secondary")
+                gr.Markdown("*Records ~4s of audio, then transcribes it with your configured STT service.*")
+
+            btn_all.click(fn=self.__diagnostics.test_all, outputs=output)
+            btn_llm.click(fn=self.__diagnostics.test_llm_connection, outputs=output)
+            btn_tts.click(fn=self.__diagnostics.test_tts_service, outputs=output)
+            btn_stt.click(fn=self.__diagnostics.test_stt_service, outputs=output)
+            btn_mic.click(fn=self.__diagnostics.test_microphone, outputs=output)
+            btn_mod.click(fn=self.__diagnostics.test_mod_folder, outputs=output)
+            btn_game.click(fn=self.__diagnostics.test_game_connection, outputs=output)
+            btn_stt_live.click(fn=self.__diagnostics.test_stt_live, outputs=output)
 
     def __get_theme(self):
         return gr.themes.Soft(primary_hue="green",

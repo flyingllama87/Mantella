@@ -3,10 +3,12 @@ import base64
 import os
 import src.utils as utils
 import numpy as np
-import win32gui
+import platform
+if platform.system() == "Windows":
+    import win32gui
+    import ctypes
 import mss
 import cv2
-import ctypes
 from pathlib import Path
 from src.config.definitions.game_definitions import GameEnum
 
@@ -61,15 +63,16 @@ class ImageManager:
                     os.remove(self.__game_image_file_path)
 
         if self.__save_screenshot:
-            self.__image_path: str = save_folder+'data\\tmp\\images'
+            self.__image_path: str = os.path.join(save_folder, 'data', 'tmp', 'images')
             os.makedirs(self.__image_path, exist_ok=True)
 
         self.__capture_params = None
 
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()
-        except:
-            logger.warning('Failed to read monitor DPI. Images may not be saved in the correct dimensions.')
+        if platform.system() == "Windows":
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except:
+                logger.warning('Failed to read monitor DPI. Images may not be saved in the correct dimensions.')
 
 
     @property
@@ -90,29 +93,35 @@ class ImageManager:
         Returns:
             dict[str,int]: A dictionary containing window locations and their coordinates
         '''
-        hwnd = win32gui.FindWindow(None, self.__window_title)
-        if not hwnd:
-            # Check if the game version is GOG
-            gog_title = self.__window_title + ' GOG'
-            hwnd = win32gui.FindWindow(None, gog_title)
+        if platform.system() == "Windows":
+            hwnd = win32gui.FindWindow(None, self.__window_title)
             if not hwnd:
-                logger.error(f"Window '{self.__window_title}' not found")
-                self.__capture_params = None
-                return None
+                # Check if the game version is GOG
+                gog_title = self.__window_title + ' GOG'
+                hwnd = win32gui.FindWindow(None, gog_title)
+                if not hwnd:
+                    logger.error(f"Window '{self.__window_title}' not found")
+                    self.__capture_params = None
+                    return None
 
-        window_rect = win32gui.GetWindowRect(hwnd)
-        client_rect = win32gui.GetClientRect(hwnd)
-        client_left, client_top = win32gui.ClientToScreen(hwnd, (0, 0))
-        
-        left_border = client_left - window_rect[0]
-        top_border = client_top - window_rect[1]
+            window_rect = win32gui.GetWindowRect(hwnd)
+            client_rect = win32gui.GetClientRect(hwnd)
+            client_left, client_top = win32gui.ClientToScreen(hwnd, (0, 0))
+            
+            left_border = client_left - window_rect[0]
+            top_border = client_top - window_rect[1]
 
-        capture_left = max(window_rect[0] + left_border + self.__capture_offset.get('left', 0), 0)
-        capture_top = max(window_rect[1] + top_border + self.__capture_offset.get('top', 0), 0)
-        capture_width = client_rect[2] + self.__capture_offset.get('right', 0)
-        capture_height = client_rect[3] + self.__capture_offset.get('bottom', 0)
+            capture_left = max(window_rect[0] + left_border + self.__capture_offset.get('left', 0), 0)
+            capture_top = max(window_rect[1] + top_border + self.__capture_offset.get('top', 0), 0)
+            capture_width = client_rect[2] + self.__capture_offset.get('right', 0)
+            capture_height = client_rect[3] + self.__capture_offset.get('bottom', 0)
 
-        return {"left": capture_left, "top": capture_top, "width": capture_width, "height": capture_height}
+            return {"left": capture_left, "top": capture_top, "width": capture_width, "height": capture_height}
+        else:
+            # On Linux, defaulting to capturing the primary monitor.
+            with mss.mss() as sct:
+                monitor = sct.monitors[1]
+                return monitor
 
 
     @utils.time_it

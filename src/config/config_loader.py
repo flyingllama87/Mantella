@@ -36,6 +36,7 @@ class ConfigLoader:
         config = configparser.ConfigParser()
         try:
             config.read(self.__file_name, encoding='utf-8')
+            logger.info(f"Config loaded from {self.__file_name}")
         except Exception as e:
             logger.error(repr(e))
             logger.error(f'Unable to read / open config.ini. If you have recently edited this file, please try reverting to a previous version. This error is normally due to using special characters.')
@@ -79,6 +80,7 @@ class ConfigLoader:
     def __on_config_value_change(self):
         self.__has_any_value_changed = True
         if not self.__is_initial_load:
+            logger.debug("Config: value changed, saving config.ini")
             self.__write_config_state(self.__definitions)
     
     def __write_config_state(self, definitions: ConfigValues, create_back_up_configini: bool = False):
@@ -101,9 +103,9 @@ class ConfigLoader:
                 # Working backwards from MantellaSoftware (where the .exe runs) -> Plugins -> F4SE/SKSE -> Data (mod folder)
                 self.mod_path = str(exe_folder.parent.parent.parent)
 
-                self.lipgen_path = self.game_path+"\\Tools\\LipGen\\"
-                self.facefx_path = self.mod_path+"\\Sound\\Voice\\Processing\\"
-                self.piper_path = str(Path(utils.resolve_path())) + "\\piper"
+                self.lipgen_path = os.path.join(self.game_path, "Tools", "LipGen")
+                self.facefx_path = os.path.join(self.mod_path, "Sound", "Voice", "Processing")
+                self.piper_path = os.path.join(str(Path(utils.resolve_path())), "piper")
                 self.moonshine_folder = str(Path(utils.resolve_path()))
 
                 game_parent_folder_name = os.path.basename(self.game_path).lower()
@@ -114,7 +116,7 @@ class ConfigLoader:
                         # Note that this path assumes that both Fallout 4 versions are installed in the same directory
                         # Working backwards from MantellaSoftware (where the .exe runs) -> Plugins -> F4SE -> Data -> Fallout 4 VR -> common (Steam folder for all games)
                         if not os.path.exists(self.lipgen_path):
-                            self.lipgen_path = str(exe_folder.parent.parent.parent.parent.parent)+"\\Fallout 4"+"\\Tools\\LipGen\\"
+                            self.lipgen_path = os.path.join(str(exe_folder.parent.parent.parent.parent.parent), "Fallout 4", "Tools", "LipGen")
                             if not os.path.exists(self.lipgen_path):
                                 self.lipgen_path = ''
                     elif 'skyrim' in game_parent_folder_name:
@@ -123,7 +125,7 @@ class ConfigLoader:
                         # Note that this path assumes that both Skyrim versions are installed in the same directory
                         # Working backwards from MantellaSoftware (where the .exe runs) -> Plugins -> SKSE -> Data -> Skyrim VR -> common (Steam folder for all games)
                         if not os.path.exists(self.lipgen_path):
-                            self.lipgen_path = str(exe_folder.parent.parent.parent.parent.parent)+"\\Skyrim Special Edition"+"\\Tools\\LipGen\\"
+                            self.lipgen_path = os.path.join(str(exe_folder.parent.parent.parent.parent.parent), "Skyrim Special Edition", "Tools", "LipGen")
                             if not os.path.exists(self.lipgen_path):
                                 self.lipgen_path = ''
                 else:
@@ -160,7 +162,7 @@ class ConfigLoader:
                 self.facefx_path = self.__definitions.get_string_value("facefx_folder")
 
             self.mod_path_base = self.mod_path
-            self.mod_path += "\\Sound\\Voice\\Mantella.esp"
+            self.mod_path = os.path.join(self.mod_path, "Sound", "Voice", "Mantella.esp")
 
             self.language = self.__definitions.get_string_value("language")
             self.end_conversation_keyword = self.__definitions.get_string_value("end_conversation_keyword")
@@ -208,6 +210,7 @@ class ConfigLoader:
             self.use_sr = self.__definitions.get_bool_value("use_sr")
 
             #STT
+            self.audio_input_device = self.__definitions.get_string_value("audio_input_device")
             self.stt_service = self.__definitions.get_string_value("stt_service").lower()
             self.moonshine_model = self.__definitions.get_string_value("moonshine_model_size")
             if not hasattr(self, 'moonshine_folder'):
@@ -247,6 +250,7 @@ class ConfigLoader:
             # if self.llm_api == "Custom":
             #     self.llm_api = self.__definitions.get_string_value("llm_custom_service_url")
             self.custom_token_count = self.__definitions.get_int_value("custom_token_count")
+            self.reasoning_effort = self.__definitions.get_string_value("reasoning_effort")
             try:
                 self.llm_params: dict[str, Any] | None = json.loads(self.__definitions.get_string_value("llm_params").replace('\n', ''))
             except Exception as e:
@@ -350,7 +354,10 @@ LLM parameter list must follow the Python dictionary format: https://www.w3schoo
 LLM parameter list must follow the Python dictionary format: https://www.w3schools.com/python/python_dictionaries.asp""")
                 self.function_llm_params = None
 
-            pass
+            if self.__is_initial_load:
+                logger.info(f"Config: Game={self.game.display_name if hasattr(self.game, 'display_name') else self.game}, LLM={self.llm_api}/{self.llm}")
+                logger.info(f"Config: TTS={self.tts_service.display_name if hasattr(self.tts_service, 'display_name') else self.tts_service}, STT={self.stt_service}, Audio device='{self.audio_input_device}'")
+                logger.info(f"Config: Mod path={self.mod_path_base}")
         except Exception as e:
             utils.play_error_sound()
             logger.error('Parameter missing/invalid in config.ini file!')
